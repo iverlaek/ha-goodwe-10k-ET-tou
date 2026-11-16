@@ -90,6 +90,53 @@ def test_decode_disabled_window_preserves_power():
     assert decoded.power == 30
 
 
+def test_signed_power_property():
+    assert (
+        registers.TouWindow(
+            start=dt.time(1), stop=dt.time(2), mode="charge", power=70
+        ).signed_power
+        == -70
+    )
+    assert (
+        registers.TouWindow(
+            start=dt.time(1), stop=dt.time(2), mode="discharge", power=70
+        ).signed_power
+        == 70
+    )
+    assert (
+        registers.TouWindow(
+            start=dt.time(1), stop=dt.time(2), mode="off", power=70
+        ).signed_power
+        == 0
+    )
+
+
+def test_from_signed_power():
+    charge = registers.TouWindow.from_signed_power(
+        start=dt.time(1), stop=dt.time(2), signed_power=-80, days="all"
+    )
+    assert charge.mode == "charge"
+    assert charge.power == 80
+
+    discharge = registers.TouWindow.from_signed_power(
+        start=dt.time(1), stop=dt.time(2), signed_power=45, days="mon"
+    )
+    assert discharge.mode == "discharge"
+    assert discharge.power == 45
+
+    off = registers.TouWindow.from_signed_power(
+        start=dt.time(1), stop=dt.time(2), signed_power=0, days="mon"
+    )
+    assert off.mode == "off"
+    assert off.power == 0
+    assert off.signed_power == 0
+
+    clamped = registers.TouWindow.from_signed_power(
+        start=dt.time(1), stop=dt.time(2), signed_power=-250, days="all"
+    )
+    assert clamped.power == 100
+
+
 def test_base_for():
     assert [registers.base_for(n) for n in const.WINDOWS] == [
         47515,

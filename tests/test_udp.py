@@ -32,9 +32,7 @@ def test_parse_read_response():
     payload = bytes([udp.READ_CMD, len(data) * 2])
     for reg in data:
         payload += reg.to_bytes(2, "big")
-    frame, partial = udp.GoodweUdpClient._parse(
-        _frame(payload), udp.READ_CMD, 47515, 2
-    )
+    frame, partial = udp.GoodweUdpClient._parse(_frame(payload), udp.READ_CMD, 47515, 2)
     assert frame is not None
     assert partial is False
 
@@ -42,18 +40,14 @@ def test_parse_read_response():
 def test_parse_oversized_datagram():
     payload = bytes([udp.READ_CMD, 2]) + (0x0400).to_bytes(2, "big")
     oversized = _frame(payload) + b"\x00" * 40
-    frame, partial = udp.GoodweUdpClient._parse(
-        oversized, udp.READ_CMD, 47515, 1
-    )
+    frame, partial = udp.GoodweUdpClient._parse(oversized, udp.READ_CMD, 47515, 1)
     assert frame is not None
     assert partial is False
 
 
 def test_parse_fragment_is_partial():
     frame = _frame(bytes([udp.READ_CMD, 2]) + (0x0400).to_bytes(2, "big"))
-    frame, partial = udp.GoodweUdpClient._parse(
-        frame[:4], udp.READ_CMD, 47515, 1
-    )
+    frame, partial = udp.GoodweUdpClient._parse(frame[:4], udp.READ_CMD, 47515, 1)
     assert frame is None
     assert partial is True
 
@@ -61,9 +55,7 @@ def test_parse_fragment_is_partial():
 def test_parse_bad_crc_rejected():
     frame = bytearray(_frame(bytes([udp.READ_CMD, 2]) + (0x0400).to_bytes(2, "big")))
     frame[-1] ^= 0xFF
-    parsed, partial = udp.GoodweUdpClient._parse(
-        bytes(frame), udp.READ_CMD, 47515, 1
-    )
+    parsed, partial = udp.GoodweUdpClient._parse(bytes(frame), udp.READ_CMD, 47515, 1)
     assert parsed is None
     assert partial is False
 
@@ -78,8 +70,8 @@ def test_parse_exception_response():
 
 def test_parse_write_echo():
     value = 0xFF9C
-    payload = bytes([udp.WRITE_CMD]) + (47529).to_bytes(2, "big") + value.to_bytes(
-        2, "big"
+    payload = (
+        bytes([udp.WRITE_CMD]) + (47529).to_bytes(2, "big") + value.to_bytes(2, "big")
     )
     frame, partial = udp.GoodweUdpClient._parse(
         _frame(payload), udp.WRITE_CMD, 47529, value
@@ -90,7 +82,9 @@ def test_parse_write_echo():
 
 def test_parse_write_echo_mismatch():
     payload = (
-        bytes([udp.WRITE_CMD]) + (47529).to_bytes(2, "big") + (0x0001).to_bytes(2, "big")
+        bytes([udp.WRITE_CMD])
+        + (47529).to_bytes(2, "big")
+        + (0x0001).to_bytes(2, "big")
     )
     parsed, partial = udp.GoodweUdpClient._parse(
         _frame(payload), udp.WRITE_CMD, 47529, 0xFF9C

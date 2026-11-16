@@ -24,9 +24,23 @@
       "init": {
         "title": "GoodWe Time-of-Use options",
         "data": {
-          "scan_interval": "Poll interval (seconds, 0 to disable)"
+          "scan_interval": "Poll interval (seconds, 0 to disable)",
+          "price_entity": "Price entity (quarter-hourly forecast)",
+          "soc_entity": "Battery state of charge entity",
+          "pv_entity": "Remaining PV forecast entity",
+          "capacity_kwh": "Battery capacity (kWh)",
+          "power_kw": "Charge/discharge power (kW)",
+          "target_soc": "Target state of charge (%)",
+          "min_soc": "Minimum state of charge (%)",
+          "pv_factor": "PV credit factor (0-1)"
         }
       }
+    }
+  },
+  "services": {
+    "set_cheapest_hours": {
+      "name": "Set cheapest hours",
+      "description": "Plan the four Time-of-Use windows from the price forecast: charge in the cheapest hours and discharge in the most expensive ones."
     }
   }
 }

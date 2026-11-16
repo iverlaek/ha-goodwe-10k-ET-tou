@@ -33,6 +33,39 @@ class TouWindow:
     def enabled(self) -> bool:
         return self.mode != "off"
 
+    @property
+    def signed_power(self) -> int:
+        """Signed percentage: negative charges, positive discharges, 0 idles."""
+        if self.mode == "charge":
+            return -abs(self.power)
+        if self.mode == "discharge":
+            return abs(self.power)
+        return 0
+
+    @classmethod
+    def from_signed_power(
+        cls,
+        *,
+        start: dt.time,
+        stop: dt.time,
+        signed_power: int,
+        days: str,
+    ) -> TouWindow:
+        """Build a window from a signed power percentage.
+
+        ``signed_power < 0`` charges, ``> 0`` discharges and ``0`` disables the
+        window. The magnitude is clamped to ``0..100``.
+        """
+        value = int(signed_power)
+        magnitude = min(100, abs(value))
+        if value < 0:
+            mode = "charge"
+        elif value > 0:
+            mode = "discharge"
+        else:
+            mode, magnitude = "off", 0
+        return cls(start=start, stop=stop, mode=mode, power=magnitude, days=days)
+
 
 def encode_time(value: dt.time) -> int:
     """``HH:MM`` packed into a register (``hour * 256 + minute``)."""
@@ -118,9 +151,7 @@ def decode_window(base: int, registers: list[int]) -> TouWindow:
     if not enabled:
         mode = "off"
         # keep the stored magnitude so re-enabling restores it
-        stored = abs(
-            registers[2] - 0x10000 if registers[2] >= 0x8000 else registers[2]
-        )
+        stored = abs(registers[2] - 0x10000 if registers[2] >= 0x8000 else registers[2])
         power = stored or power
     return TouWindow(
         start=decode_time(registers[0]),

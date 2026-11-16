@@ -6,6 +6,7 @@ installed (for example in the lightweight CI job).
 
 from __future__ import annotations
 
+import datetime as dt
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.goodwe_tou.const import DOMAIN
 from custom_components.goodwe_tou.goodwe_udp import GoodweUdpClient
+
+BASE = 47515
 
 # window 1 = 04:00-06:00 charge 100% every day
 # window 2 = 12:30-15:30 charge 30% (switch off)
@@ -43,13 +46,28 @@ TOU_REGISTERS = [
 ]
 
 
-def _fake_read(offset: int, count: int):
-    if offset == 47000:
-        return [3]
-    if offset == 47515:
-        assert count == 16
-        return list(TOU_REGISTERS)
-    raise AssertionError(f"unexpected read at {offset}")
+@pytest.fixture
+def store() -> list[int]:
+    return list(TOU_REGISTERS)
+
+
+def _read_from(store: list[int], work_mode: int = 3):
+    def _read(offset: int, count: int):
+        if offset == 47000:
+            return [work_mode]
+        if offset == BASE:
+            assert count == 16
+            return list(store)
+        raise AssertionError(f"unexpected read at {offset}")
+
+    return _read
+
+
+def _write_to(store: list[int]):
+    def _write(register: int, value: int) -> None:
+        store[register - BASE] = value & 0xFFFF
+
+    return _write
 
 
 @pytest.fixture
@@ -63,8 +81,10 @@ def entry(hass: HomeAssistant) -> MockConfigEntry:
 
 
 @pytest.mark.asyncio
-async def test_setup_creates_entities(hass: HomeAssistant, entry: MockConfigEntry):
-    with patch.object(GoodweUdpClient, "read_registers", side_effect=_fake_read):
+async def test_setup_creates_entities(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -72,34 +92,42 @@ async def test_setup_creates_entities(hass: HomeAssistant, entry: MockConfigEntr
     assert "switch.goodwe_time_of_use_eco_mode" in ids
     assert "button.goodwe_time_of_use_read_from_inverter" in ids
     assert "button.goodwe_time_of_use_apply_to_inverter" in ids
+    assert "button.goodwe_time_of_use_set_cheapest_hours" in ids
 
     start = hass.states.get("time.goodwe_time_of_use_window_1_start")
     stop = hass.states.get("time.goodwe_time_of_use_window_1_stop")
-    mode = hass.states.get("select.goodwe_time_of_use_window_1_mode")
     power = hass.states.get("number.goodwe_time_of_use_window_1_power")
     days = hass.states.get("text.goodwe_time_of_use_window_1_days")
     eco = hass.states.get("switch.goodwe_time_of_use_eco_mode")
 
     assert start.state == "04:00:00"
     assert stop.state == "06:00:00"
-    assert mode.state == "charge"
-    assert power.state == "100.0"
+    assert power.state == "-100.0"
     assert days.state == "mon,tue,wed,thu,fri,sat,sun"
     assert eco.state == "on"
 
-    # window 2 has the switch off -> mode off, stored magnitude preserved
-    assert hass.states.get("select.goodwe_time_of_use_window_2_mode").state == "off"
-    assert hass.states.get("number.goodwe_time_of_use_window_2_power").state == "30.0"
+    # no more select entities
+    assert not any(i.startswith("select.goodwe_time_of_use") for i in ids)
+
+    # window 2 has the switch off -> signed power 0
+    assert hass.states.get("number.goodwe_time_of_use_window_2_power").state == "0.0"
     # window 3 runs on saturday only
     assert hass.states.get("text.goodwe_time_of_use_window_3_days").state == "sat"
 
 
 @pytest.mark.asyncio
-async def test_apply_writes_registers(hass: HomeAssistant, entry: MockConfigEntry):
+async def test_apply_writes_registers(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
     writes: list[tuple[int, int]] = []
 
-    with patch.object(GoodweUdpClient, "read_registers", side_effect=_fake_read), patch.object(
-        GoodweUdpClient, "write_register", side_effect=lambda r, v: writes.append((r, v))
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -126,12 +154,17 @@ async def test_apply_writes_registers(hass: HomeAssistant, entry: MockConfigEntr
 
 @pytest.mark.asyncio
 async def test_set_time_writes_single_register(
-    hass: HomeAssistant, entry: MockConfigEntry
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
 ):
     writes: list[tuple[int, int]] = []
 
-    with patch.object(GoodweUdpClient, "read_registers", side_effect=_fake_read), patch.object(
-        GoodweUdpClient, "write_register", side_effect=lambda r, v: writes.append((r, v))
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -148,9 +181,81 @@ async def test_set_time_writes_single_register(
         await hass.async_block_till_done()
 
     assert writes == [(47515, 5 * 256 + 15)]
-    assert (
-        hass.states.get("time.goodwe_time_of_use_window_1_start").state == "05:15:00"
+    assert hass.states.get("time.goodwe_time_of_use_window_1_start").state == "05:15:00"
+
+
+@pytest.mark.asyncio
+async def test_set_signed_power_enables_window(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    writes: list[tuple[int, int]] = []
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {
+                "entity_id": "number.goodwe_time_of_use_window_2_power",
+                "value": 60,
+            },
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    mapping = dict(writes)
+    # +60 discharges: power register 60, switch on with the existing days mask
+    assert mapping[47519 + 2] == 60
+    assert mapping[47519 + 3] == 0xFF7F
+    assert hass.states.get("number.goodwe_time_of_use_window_2_power").state == "60.0"
+
+
+@pytest.mark.asyncio
+async def test_cheapest_hours_service(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {
+            "time": (base + dt.timedelta(minutes=15 * i)).isoformat(),
+            "price": i / 100.0,
+        }
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
     )
+    hass.states.async_set("sensor.battery_state_of_charge", "50")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(DOMAIN, "set_cheapest_hours", {}, blocking=True)
+        await hass.async_block_till_done()
+
+    powers = [
+        float(hass.states.get(f"number.goodwe_time_of_use_window_{n}_power").state)
+        for n in range(1, 5)
+    ]
+    assert any(p < 0 for p in powers), powers
+    assert any(p > 0 for p in powers), powers
 
 
 @pytest.mark.asyncio

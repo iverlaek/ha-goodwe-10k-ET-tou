@@ -1,4 +1,4 @@
-"""Button entities: read from and apply to the inverter."""
+"""Button entities: read from, apply to, and optimise the inverter."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ async def async_setup_entry(
         [
             TouReadButton(coordinator),
             TouApplyButton(coordinator),
+            TouCheapestHoursButton(coordinator),
         ]
     )
 
@@ -30,9 +31,7 @@ class TouReadButton(GoodweTouEntity, ButtonEntity):
     """Read the current schedule from the inverter."""
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(
-            coordinator, "read", "Read from inverter", "mdi:download"
-        )
+        super().__init__(coordinator, "read", "Read from inverter", "mdi:download")
 
     async def async_press(self) -> None:
         await self.coordinator.async_read()
@@ -42,9 +41,22 @@ class TouApplyButton(GoodweTouEntity, ButtonEntity):
     """Write every window to the inverter."""
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(
-            coordinator, "apply", "Apply to inverter", "mdi:upload"
-        )
+        super().__init__(coordinator, "apply", "Apply to inverter", "mdi:upload")
 
     async def async_press(self) -> None:
         await self.coordinator.async_apply()
+
+
+class TouCheapestHoursButton(GoodweTouEntity, ButtonEntity):
+    """Plan and apply the cheapest charging / most expensive discharging hours."""
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "cheapest_hours",
+            "Set cheapest hours",
+            "mdi:cash-clock",
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_cheapest_hours()

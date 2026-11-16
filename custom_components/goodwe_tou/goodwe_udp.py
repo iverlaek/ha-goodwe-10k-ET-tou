@@ -135,9 +135,7 @@ class GoodweUdpClient:
         assert last_error is not None
         raise last_error
 
-    def _attempt(
-        self, request: bytes, cmd: int, offset: int, value: int
-    ) -> bytes:
+    def _attempt(self, request: bytes, cmd: int, offset: int, value: int) -> bytes:
         """One send/receive attempt, tolerating fragmented answers."""
         deadline = time.monotonic() + self.timeout
         partial = b""
@@ -163,9 +161,7 @@ class GoodweUdpClient:
                 except OSError as err:  # pragma: no cover - environment specific
                     raise GoodweConnectionError(str(err)) from err
 
-                frame, is_partial = self._parse(
-                    partial + data, cmd, offset, value
-                )
+                frame, is_partial = self._parse(partial + data, cmd, offset, value)
                 if frame is not None:
                     return frame
                 partial = partial + data if is_partial else b""
@@ -223,9 +219,7 @@ class GoodweUdpClient:
         """Read ``count`` consecutive holding registers starting at ``offset``."""
         frame = self._transceive(READ_CMD, offset, count)
         payload = frame[5:-2]
-        return [
-            int.from_bytes(payload[i * 2 : i * 2 + 2], "big") for i in range(count)
-        ]
+        return [int.from_bytes(payload[i * 2 : i * 2 + 2], "big") for i in range(count)]
 
     def write_register(self, register: int, value: int) -> None:
         """Write a single holding register (value masked to 16 bits)."""

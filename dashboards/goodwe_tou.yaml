@@ -1,11 +1,11 @@
 # Example Home Assistant dashboard for the GoodWe Time-of-Use integration.
 #
-# This is a plain Lovelace dashboard: create a new dashboard (Settings ->
-# Dashboards -> Add dashboard -> New dashboard from scratch), open the raw
-# configuration editor and paste this in.
+# Create a new dashboard (Settings -> Dashboards -> Add dashboard -> New
+# dashboard from scratch), open the raw configuration editor and paste this in.
 #
-# The entity IDs below assume the default device name "GoodWe Time-of-Use".
-# If you renamed the device, adjust the IDs (see the README).
+# The bundled card is served by the integration and loaded automatically, so no
+# extra resources are needed. The entity IDs below assume the default device
+# name "GoodWe Time-of-Use"; adjust `prefix` if you renamed the device.
 
 title: GoodWe TOU
 views:
@@ -13,53 +13,16 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
+      - type: custom:goodwe-tou-card
+        title: GoodWe Time-of-Use
+
       - type: entities
-        title: Control
+        title: Status
         show_header_toggle: false
         entities:
           - entity: switch.goodwe_time_of_use_eco_mode
             name: ECO mode (Time-of-Use active)
-          - entity: button.goodwe_time_of_use_read_from_inverter
-            name: Read from inverter
-          - entity: button.goodwe_time_of_use_apply_to_inverter
-            name: Apply to inverter
-
-      - type: entities
-        title: Window 1
-        show_header_toggle: false
-        entities:
-          - entity: time.goodwe_time_of_use_window_1_start
-          - entity: time.goodwe_time_of_use_window_1_stop
-          - entity: select.goodwe_time_of_use_window_1_mode
-          - entity: number.goodwe_time_of_use_window_1_power
-          - entity: text.goodwe_time_of_use_window_1_days
-
-      - type: entities
-        title: Window 2
-        show_header_toggle: false
-        entities:
-          - entity: time.goodwe_time_of_use_window_2_start
-          - entity: time.goodwe_time_of_use_window_2_stop
-          - entity: select.goodwe_time_of_use_window_2_mode
-          - entity: number.goodwe_time_of_use_window_2_power
-          - entity: text.goodwe_time_of_use_window_2_days
-
-      - type: entities
-        title: Window 3
-        show_header_toggle: false
-        entities:
-          - entity: time.goodwe_time_of_use_window_3_start
-          - entity: time.goodwe_time_of_use_window_3_stop
-          - entity: select.goodwe_time_of_use_window_3_mode
-          - entity: number.goodwe_time_of_use_window_3_power
-          - entity: text.goodwe_time_of_use_window_3_days
-
-      - type: entities
-        title: Window 4
-        show_header_toggle: false
-        entities:
-          - entity: time.goodwe_time_of_use_window_4_start
-          - entity: time.goodwe_time_of_use_window_4_stop
-          - entity: select.goodwe_time_of_use_window_4_mode
-          - entity: number.goodwe_time_of_use_window_4_power
-          - entity: text.goodwe_time_of_use_window_4_days
+          - entity: sensor.battery_state_of_charge
+          - entity: sensor.battery_power
+          - entity: sensor.average_electricity_price
+          - entity: sensor.energy_production_today_remaining

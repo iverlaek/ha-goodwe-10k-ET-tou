@@ -5,18 +5,34 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_CAPACITY_KWH,
+    CONF_MIN_SOC,
+    CONF_POWER_KW,
+    CONF_PRICE_ENTITY,
+    CONF_PV_ENTITY,
+    CONF_PV_FACTOR,
     CONF_SCAN_INTERVAL,
+    CONF_SOC_ENTITY,
+    CONF_TARGET_SOC,
+    DEFAULT_CAPACITY_KWH,
+    DEFAULT_MIN_SOC,
+    DEFAULT_POWER_KW,
+    DEFAULT_PRICE_ENTITY,
+    DEFAULT_PV_ENTITY,
+    DEFAULT_PV_FACTOR,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SOC_ENTITY,
+    DEFAULT_TARGET_SOC,
     DOMAIN,
     ECO_WORK_MODE,
     GENERAL_WORK_MODE,
@@ -24,12 +40,14 @@ from .const import (
     WORK_MODE_REGISTER,
 )
 from .goodwe_udp import GoodweError, GoodweUdpClient
+from .optimizer import plan_registers, plan_windows, slots_from_prices
 from .registers import TouWindow, base_for, decode_window, window_registers
 
 _LOGGER = logging.getLogger(__name__)
 
 _FIRST_BASE = base_for(1)
 _REGISTER_COUNT = 4 * len(WINDOWS)
+_APPLY_ATTEMPTS = 3
 
 
 class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -61,7 +79,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         registers = self.client.read_registers(_FIRST_BASE, _REGISTER_COUNT)
         windows: dict[int, TouWindow] = {}
         for number in WINDOWS:
-            offset = (base_for(number) - _FIRST_BASE)
+            offset = base_for(number) - _FIRST_BASE
             windows[number] = decode_window(
                 base_for(number), registers[offset : offset + 4]
             )
@@ -74,7 +92,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GoodweError as err:
             raise UpdateFailed(str(err)) from err
 
-    async def _write(self, mapping: dict[int, int]) -> None:
+    async def _write(self, mapping: Mapping[int, int]) -> None:
         try:
             for register, value in mapping.items():
                 await self._call(self.client.write_register, register, value)
@@ -87,6 +105,13 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise HomeAssistantError(f"Window {number} is not available yet")
         return window
 
+    def _registers_for(self, windows: Mapping[int, TouWindow]) -> dict[int, int]:
+        mapping: dict[int, int] = {}
+        for number, window in windows.items():
+            for relative, value in window_registers(window).items():
+                mapping[base_for(number) + relative] = value
+        return mapping
+
     # -- public operations -------------------------------------------------
 
     async def async_read(self) -> None:
@@ -94,18 +119,44 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             data = await self._call(self._read_all)
         except GoodweError as err:
-            raise HomeAssistantError(f"Could not read from the inverter: {err}") from err
+            raise HomeAssistantError(
+                f"Could not read from the inverter: {err}"
+            ) from err
         self.async_set_updated_data(data)
 
     async def async_apply(self) -> None:
-        """Write every window to the inverter."""
-        mapping: dict[int, int] = {}
-        for number in WINDOWS:
-            registers = window_registers(self._window(number))
-            for relative, value in registers.items():
-                mapping[base_for(number) + relative] = value
-        await self._write(mapping)
-        await self.async_read()
+        """Write every window to the inverter and verify the result.
+
+        The dongle is flaky and another integration may be polling it at the
+        same time, so the write is retried until a read-back matches what we
+        intended to write.
+        """
+        windows = {number: self._window(number) for number in WINDOWS}
+        mapping = self._registers_for(windows)
+
+        last: dict[str, Any] | None = None
+        for attempt in range(1, _APPLY_ATTEMPTS + 1):
+            await self._write(mapping)
+            try:
+                last = await self._call(self._read_all)
+            except GoodweError as err:
+                raise HomeAssistantError(f"Could not verify the write: {err}") from err
+            if self._registers_for(last["windows"]) == mapping:
+                self.async_set_updated_data(last)
+                return
+            _LOGGER.warning(
+                "Apply verification attempt %s/%s did not match, retrying",
+                attempt,
+                _APPLY_ATTEMPTS,
+            )
+
+        if last is not None:
+            self.async_set_updated_data(last)
+        raise HomeAssistantError(
+            "The inverter did not accept the schedule (read-back mismatch after "
+            f"{_APPLY_ATTEMPTS} attempts). Another integration may be polling the "
+            "dongle at the same time."
+        )
 
     async def async_set_window_time(
         self, number: int, kind: str, value: dt.time
@@ -113,25 +164,25 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         window = self._window(number)
         updated = replace(window, **{kind: value})
         relative = 0 if kind == "start" else 1
-        await self._write({base_for(number) + relative: window_registers(updated)[relative]})
-        self.data["windows"][number] = updated
-        self.async_set_updated_data(self.data)
-
-    async def async_set_window_mode(self, number: int, mode: str) -> None:
-        window = self._window(number)
-        updated = replace(window, mode=mode)
-        registers = window_registers(updated)
         await self._write(
-            {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
+            {base_for(number) + relative: window_registers(updated)[relative]}
         )
         self.data["windows"][number] = updated
         self.async_set_updated_data(self.data)
 
-    async def async_set_window_power(self, number: int, power: int) -> None:
+    async def async_set_window_power(self, number: int, signed_power: int) -> None:
+        """Set the signed power (negative charges, positive discharges)."""
         window = self._window(number)
-        updated = replace(window, power=max(0, min(100, int(power))))
+        updated = TouWindow.from_signed_power(
+            start=window.start,
+            stop=window.stop,
+            signed_power=signed_power,
+            days=window.days,
+        )
         registers = window_registers(updated)
-        await self._write({base_for(number) + 2: registers[2]})
+        await self._write(
+            {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
+        )
         self.data["windows"][number] = updated
         self.async_set_updated_data(self.data)
 
@@ -148,3 +199,81 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._write({WORK_MODE_REGISTER: value})
         self.data["work_mode"] = value
         self.async_set_updated_data(self.data)
+
+    # -- cheapest hours ----------------------------------------------------
+
+    def _option(self, key: str, default: Any) -> Any:
+        return self.config_entry.options.get(key, default)
+
+    def _state(self, entity_id: str) -> State | None:
+        return self.hass.states.get(entity_id) if entity_id else None
+
+    def _price_slots(self, entity_id: str) -> list:
+        state = self._state(entity_id)
+        if state is None:
+            raise HomeAssistantError(f"Price entity {entity_id} was not found")
+        attributes = state.attributes
+        raw = attributes.get("prices")
+        if not raw:
+            raw = list(attributes.get("prices_today") or []) + list(
+                attributes.get("prices_tomorrow") or []
+            )
+        slots = slots_from_prices(raw)
+        if not slots:
+            raise HomeAssistantError(
+                f"Price entity {entity_id} does not expose a 'prices' attribute"
+            )
+        return slots
+
+    def _float_state(self, entity_id: str, default: float) -> float:
+        state = self._state(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return default
+        try:
+            return float(state.state)
+        except (TypeError, ValueError):
+            return default
+
+    async def async_set_cheapest_hours(
+        self, overrides: Mapping[str, Any] | None = None
+    ) -> list[TouWindow]:
+        """Plan and apply the cheapest charging / most expensive discharging hours."""
+        overrides = overrides or {}
+
+        def setting(key: str, default: Any) -> Any:
+            if key in overrides and overrides[key] is not None:
+                return overrides[key]
+            return self._option(key, default)
+
+        price_entity = setting(CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY)
+        soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
+        pv_entity = setting(CONF_PV_ENTITY, DEFAULT_PV_ENTITY)
+        capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
+        power_kw = float(setting(CONF_POWER_KW, DEFAULT_POWER_KW))
+        target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
+        min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
+        pv_factor = float(setting(CONF_PV_FACTOR, DEFAULT_PV_FACTOR))
+
+        slots = self._price_slots(price_entity)
+        soc = self._float_state(soc_entity, target_soc)
+        pv_remaining = self._float_state(pv_entity, 0.0)
+
+        now = dt.datetime.now(dt.UTC).astimezone()
+        planned = plan_windows(
+            slots,
+            now,
+            soc=soc,
+            capacity_kwh=capacity_kwh,
+            power_kw=power_kw,
+            target_soc=target_soc,
+            min_soc=min_soc,
+            pv_credit_kwh=pv_remaining * pv_factor,
+        )
+        plan = plan_registers(planned)
+
+        for number, window in zip(WINDOWS, plan, strict=True):
+            self.data["windows"][number] = window
+        self.async_set_updated_data(self.data)
+
+        await self.async_apply()
+        return plan

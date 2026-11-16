@@ -14,14 +14,30 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 
 from .const import (
+    CONF_CAPACITY_KWH,
     CONF_COMM_ADDR,
     CONF_HOST,
+    CONF_MIN_SOC,
     CONF_PORT,
+    CONF_POWER_KW,
+    CONF_PRICE_ENTITY,
+    CONF_PV_ENTITY,
+    CONF_PV_FACTOR,
     CONF_SCAN_INTERVAL,
+    CONF_SOC_ENTITY,
+    CONF_TARGET_SOC,
+    DEFAULT_CAPACITY_KWH,
     DEFAULT_COMM_ADDR,
     DEFAULT_HOST,
+    DEFAULT_MIN_SOC,
     DEFAULT_PORT,
+    DEFAULT_POWER_KW,
+    DEFAULT_PRICE_ENTITY,
+    DEFAULT_PV_ENTITY,
+    DEFAULT_PV_FACTOR,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SOC_ENTITY,
+    DEFAULT_TARGET_SOC,
     DEFAULT_TIMEOUT,
     DOMAIN,
     WORK_MODE_REGISTER,
@@ -48,9 +64,7 @@ class GoodweTouConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             host = user_input[CONF_HOST]
@@ -90,20 +104,53 @@ class GoodweTouConfigFlow(ConfigFlow, domain=DOMAIN):
 class GoodweTouOptionsFlow(OptionsFlow):
     """Handle the options flow."""
 
-    async def async_step_init(
-        self, user_input: dict | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-        )
+        options = self.config_entry.options
+
+        def default(key: str, fallback: object) -> object:
+            return options.get(key, fallback)
+
         schema = vol.Schema(
             {
-                vol.Optional(CONF_SCAN_INTERVAL, default=current): vol.All(
-                    int, vol.Range(min=0, max=3600)
-                )
+                vol.Optional(
+                    CONF_SCAN_INTERVAL,
+                    default=default(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                ): vol.All(int, vol.Range(min=0, max=3600)),
+                vol.Optional(
+                    CONF_PRICE_ENTITY,
+                    default=default(CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY),
+                ): str,
+                vol.Optional(
+                    CONF_SOC_ENTITY,
+                    default=default(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY),
+                ): str,
+                vol.Optional(
+                    CONF_PV_ENTITY,
+                    default=default(CONF_PV_ENTITY, DEFAULT_PV_ENTITY),
+                ): str,
+                vol.Optional(
+                    CONF_CAPACITY_KWH,
+                    default=default(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH),
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=200)),
+                vol.Optional(
+                    CONF_POWER_KW,
+                    default=default(CONF_POWER_KW, DEFAULT_POWER_KW),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100)),
+                vol.Optional(
+                    CONF_TARGET_SOC,
+                    default=default(CONF_TARGET_SOC, DEFAULT_TARGET_SOC),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Optional(
+                    CONF_MIN_SOC,
+                    default=default(CONF_MIN_SOC, DEFAULT_MIN_SOC),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Optional(
+                    CONF_PV_FACTOR,
+                    default=default(CONF_PV_FACTOR, DEFAULT_PV_FACTOR),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -1,4 +1,4 @@
-"""Number entities: window power percentage."""
+"""Number entities: signed window power percentage."""
 
 from __future__ import annotations
 
@@ -23,9 +23,13 @@ async def async_setup_entry(
 
 
 class TouPowerEntity(GoodweTouEntity, NumberEntity):
-    """Charge/discharge power of one Time-of-Use window."""
+    """Signed charge/discharge power of one Time-of-Use window.
 
-    _attr_native_min_value = 0
+    The value is a signed percentage: ``-100`` charges at full power, ``0``
+    disables the window and ``+100`` discharges at full power.
+    """
+
+    _attr_native_min_value = -100
     _attr_native_max_value = 100
     _attr_native_step = 1
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -33,14 +37,26 @@ class TouPowerEntity(GoodweTouEntity, NumberEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator, window: int) -> None:
         super().__init__(
-            coordinator, f"w{window}_power", f"Window {window} power", "mdi:battery-charging"
+            coordinator,
+            f"w{window}_power",
+            f"Window {window} power",
+            "mdi:battery-charging",
         )
         self._window = window
 
     @property
     def native_value(self) -> float | None:
         window = self.coordinator.data["windows"].get(self._window)
-        return float(window.power) if window else None
+        return float(window.signed_power) if window else None
+
+    @property
+    def icon(self) -> str:
+        value = self.native_value or 0
+        if value < 0:
+            return "mdi:battery-arrow-down"
+        if value > 0:
+            return "mdi:battery-arrow-up"
+        return "mdi:battery-off-outline"
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_window_power(self._window, int(value))
