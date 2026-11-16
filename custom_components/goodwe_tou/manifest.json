@@ -11,5 +11,5 @@
   "issue_tracker": "https://github.com/iverlaek/ha-goodwe-10k-ET-tou/issues",
   "loggers": ["custom_components.goodwe_tou"],
   "requirements": [],
-  "version": "0.2.1"
+  "version": "0.2.2"
 }

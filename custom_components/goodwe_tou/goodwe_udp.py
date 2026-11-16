@@ -9,10 +9,12 @@ The GoodWe Wi-Fi/LAN dongle speaks a Modbus/RTU variant over UDP:
 register. The CRC is the standard Modbus CRC-16 (poly ``0xA001``) computed over
 the frame without the two leading ``0xAA 0x55`` bytes and without the CRC itself.
 
-The dongle is unreliable: it occasionally answers with an oversized datagram, a
-fragmented one, or not at all. A response is therefore only accepted once a
-CRC-valid frame has been parsed out of it, and each request is retried a few
-times before giving up.
+The dongle is unreliable: it occasionally answers with an oversized datagram
+holding several concatenated Modbus frames, a fragmented one, or not at all. A
+response is therefore only accepted once a CRC-valid frame whose byte count
+matches our request has been parsed out of it (taking the last such frame, since
+the dongle appends its answer after any stale ones), and each request is retried
+a few times before giving up.
 """
 
 from __future__ import annotations
@@ -136,9 +138,10 @@ class GoodweUdpClient:
         raise last_error
 
     def _attempt(self, request: bytes, cmd: int, offset: int, value: int) -> bytes:
-        """One send/receive attempt, tolerating fragmented answers."""
+        """One send/receive attempt, tolerating oversized/fragmented answers."""
         deadline = time.monotonic() + self.timeout
-        partial = b""
+        buffer = b""
+        best: bytes | None = None
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             try:
                 sock.sendto(request, (self.host, self.port))
@@ -148,70 +151,118 @@ class GoodweUdpClient:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    if best is not None:
+                        return best
                     raise GoodweTimeoutError(
                         f"no valid answer from {self.host}:{self.port}"
                     )
                 sock.settimeout(remaining)
                 try:
-                    data, _ = sock.recvfrom(2048)
+                    data, _ = sock.recvfrom(4096)
                 except TimeoutError as err:
+                    if best is not None:
+                        return best
                     raise GoodweTimeoutError(
                         f"no valid answer from {self.host}:{self.port}"
                     ) from err
                 except OSError as err:  # pragma: no cover - environment specific
                     raise GoodweConnectionError(str(err)) from err
 
-                frame, is_partial = self._parse(partial + data, cmd, offset, value)
+                buffer += data
+                frame, is_partial = self._parse(buffer, cmd, offset, value)
                 if frame is not None:
-                    return frame
-                partial = partial + data if is_partial else b""
+                    best = frame
+                    if not is_partial:
+                        return frame
+                if not is_partial:
+                    # Keep a possible start-of-header at the very end.
+                    buffer = buffer[-1:] if buffer.endswith(_HEADER[:1]) else b""
+                elif len(buffer) > 16384:
+                    buffer = buffer[-8192:]
 
     @staticmethod
     def _parse(
         data: bytes, cmd: int, offset: int, value: int
     ) -> tuple[bytes | None, bool]:
-        """Validate a datagram.
+        """Find the valid answer to *our* request inside a datagram.
 
-        Returns ``(frame, is_partial)`` where ``frame`` is the valid answer when
-        one could be parsed, and ``is_partial`` signals that ``data`` looks like
-        the start of an answer that has not fully arrived yet.
+        The dongle sometimes returns an oversized datagram holding several
+        concatenated Modbus frames — stale buffered ones first, our answer last.
+        Worse, when another integration polls the same dongle concurrently, a
+        frame answering somebody else's request can land in our datagram. A read
+        response does not echo the register offset, so the only way to tell the
+        frames apart is the byte count: it must match the number of registers we
+        asked for (and, for writes, the echoed offset and value).
+
+        Returns ``(frame, is_partial)`` where ``frame`` is the *last* matching
+        frame (the dongle appends its answer after any stale frames) and
+        ``is_partial`` signals that the datagram ends with an incomplete frame
+        that may complete with more data.
         """
-        if len(data) < 2 or data[0:2] != _HEADER:
-            return None, False
-        if len(data) < 4:
-            return None, True
+        last_frame: bytes | None = None
+        exception: int | None = None
+        partial = False
+        pos = 0
+        size = len(data)
 
-        resp_cmd = data[3]
-        if resp_cmd & 0x80:  # Modbus exception
-            code = data[4] if len(data) > 4 else 0
+        while pos + 4 <= size:
+            start = data.find(_HEADER, pos)
+            if start == -1:
+                break
+            chunk = data[start:]
+            resp_cmd = chunk[3]
+
+            if resp_cmd & 0x80:  # Modbus exception
+                if resp_cmd == (cmd | 0x80):
+                    exception = chunk[4] if len(chunk) > 4 else 0
+                pos = start + 2
+                continue
+
+            if resp_cmd == READ_CMD:
+                if len(chunk) < 5:
+                    partial = True
+                    pos = start + 2
+                    continue
+                byte_count = chunk[4]
+                if byte_count != 2 * value:
+                    # Answers a different request; keep looking.
+                    pos = start + 2
+                    continue
+                expected = 5 + byte_count + 2
+            elif resp_cmd == WRITE_CMD:
+                expected = 10
+            else:
+                pos = start + 2
+                continue
+
+            if len(chunk) < expected:
+                partial = True
+                pos = start + 2
+                continue
+
+            frame = chunk[:expected]
+            if crc16(frame[2:-2]) != int.from_bytes(frame[-2:], "little"):
+                pos = start + 2
+                continue
+
+            if resp_cmd == WRITE_CMD:
+                resp_offset = int.from_bytes(frame[4:6], "big")
+                resp_value = int.from_bytes(frame[6:8], "big")
+                if resp_offset != offset or resp_value != (value & 0xFFFF):
+                    pos = start + 2
+                    continue
+
+            last_frame = frame
+            pos = start + expected
+
+        if last_frame is not None:
+            return last_frame, partial
+        if exception is not None:
             raise GoodweRejectedError(
-                f"inverter rejected request: {_FAILURE_CODES.get(code, 'unknown')} "
-                f"({code})"
+                f"inverter rejected request: {_FAILURE_CODES.get(exception, 'unknown')} "
+                f"({exception})"
             )
-
-        if resp_cmd == READ_CMD:
-            if len(data) < 5:
-                return None, True
-            expected = 5 + data[4] + 2
-        elif resp_cmd == WRITE_CMD:
-            expected = 10
-        else:
-            return None, False
-
-        if len(data) < expected:
-            return None, True
-
-        frame = data[:expected]
-        if crc16(frame[2:-2]) != int.from_bytes(frame[-2:], "little"):
-            return None, False
-
-        if resp_cmd == WRITE_CMD:
-            resp_offset = int.from_bytes(frame[4:6], "big")
-            resp_value = int.from_bytes(frame[6:8], "big")
-            if resp_offset != offset or resp_value != (value & 0xFFFF):
-                return None, False
-
-        return frame, False
+        return None, partial
 
     # -- public API --------------------------------------------------------
 
@@ -219,6 +270,10 @@ class GoodweUdpClient:
         """Read ``count`` consecutive holding registers starting at ``offset``."""
         frame = self._transceive(READ_CMD, offset, count)
         payload = frame[5:-2]
+        if len(payload) != count * 2:
+            raise GoodweProtocolError(
+                f"expected {count * 2} payload bytes, got {len(payload)}"
+            )
         return [int.from_bytes(payload[i * 2 : i * 2 + 2], "big") for i in range(count)]
 
     def write_register(self, register: int, value: int) -> None:
