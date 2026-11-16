@@ -304,4 +304,4 @@ window.customCards.push({
   preview: false,
 });
 
-console.info("%c GOODWE-TOU-CARD %c v0.2.2 ", "background:#2e7d32;color:#fff;font-weight:bold", "background:#333;color:#fff");
+console.info("%c GOODWE-TOU-CARD %c v0.2.3 ", "background:#2e7d32;color:#fff;font-weight:bold", "background:#333;color:#fff");

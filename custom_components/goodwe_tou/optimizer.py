@@ -36,16 +36,20 @@ class PriceSlot:
 
 
 def slots_from_prices(prices: Iterable[Mapping[str, object]]) -> list[PriceSlot]:
-    """Normalise ENTSO-e style ``{time, price}`` mappings into :class:`PriceSlot`.
+    """Normalise a price forecast into :class:`PriceSlot` objects.
 
-    Accepts ISO-8601 strings or :class:`datetime.datetime` for ``time``. Items
-    that cannot be parsed are skipped rather than raising, because the price
-    attribute comes straight from another integration.
+    Understands the shapes used by the common integrations: ENTSO-e exposes
+    ``{time, price}`` while Nordpool exposes ``{start, end, value}``. Accepts
+    ISO-8601 strings or :class:`datetime.datetime` for the timestamp. Items that
+    cannot be parsed are skipped rather than raising, because the attribute comes
+    straight from another integration.
     """
     result: list[PriceSlot] = []
     for item in prices or ():
-        raw_time = item.get("time")
-        raw_price = item.get("price")
+        if not isinstance(item, Mapping):
+            continue
+        raw_time = item.get("time", item.get("start"))
+        raw_price = item.get("price", item.get("value"))
         if raw_time is None or raw_price is None:
             continue
         moment = raw_time

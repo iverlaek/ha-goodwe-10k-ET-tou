@@ -145,7 +145,7 @@ data:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `price_entity` | `sensor.average_electricity_price` | Entity with a `prices` attribute of `{time, price}` slots |
+| `price_entity` | `sensor.average_electricity_price` | Entity exposing the quarter-hourly forecast — ENTSO-e (`prices` with `{time, price}`) or Nordpool (`raw_today`/`raw_tomorrow` with `{start, value}`) |
 | `soc_entity` | `sensor.battery_state_of_charge` | Battery state of charge (%) |
 | `pv_entity` | `sensor.energy_production_today_remaining` | Remaining PV production today (kWh) |
 | `capacity_kwh` | `24` | Usable battery capacity |

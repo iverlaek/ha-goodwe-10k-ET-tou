@@ -31,6 +31,27 @@ def test_slots_from_prices_parses_and_skips_bad_items():
     assert slots[1].price == 0.10
 
 
+def test_slots_from_prices_accepts_nordpool_shape():
+    slots = optimizer.slots_from_prices(
+        [
+            {
+                "start": "2026-11-16T00:00:00+01:00",
+                "end": "2026-11-16T00:15:00+01:00",
+                "value": 0.176,
+            },
+            {
+                "start": "2026-11-16T00:15:00+01:00",
+                "end": "2026-11-16T00:30:00+01:00",
+                "value": 0.167,
+            },
+            0.15,  # bare float (Nordpool's ``today`` list) -> skipped
+        ]
+    )
+    assert len(slots) == 2
+    assert slots[0].price == 0.176
+    assert slots[1].time.minute == 15
+
+
 def test_plan_charges_cheap_and_discharges_expensive():
     start = dt.datetime(2026, 11, 16, 0, 0)
     slots = _slots(start, 96)

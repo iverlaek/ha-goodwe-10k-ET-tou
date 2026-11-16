@@ -218,10 +218,16 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raw = list(attributes.get("prices_today") or []) + list(
                 attributes.get("prices_tomorrow") or []
             )
+        if not raw:
+            # Nordpool style.
+            raw = list(attributes.get("raw_today") or []) + list(
+                attributes.get("raw_tomorrow") or []
+            )
         slots = slots_from_prices(raw)
         if not slots:
             raise HomeAssistantError(
-                f"Price entity {entity_id} does not expose a 'prices' attribute"
+                f"Price entity {entity_id} does not expose a usable price forecast "
+                "(expected a 'prices', 'prices_today' or 'raw_today' attribute)"
             )
         return slots
 
