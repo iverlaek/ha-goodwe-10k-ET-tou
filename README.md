@@ -13,6 +13,12 @@ automate them from scripts, automations and dashboards.
 > layout) with a Wi-Fi/LAN Kit 2.0 dongle. Other ET-series hybrids that use the
 > same register map should work.
 
+<p align="center">
+  <a href="https://www.goodwe.com/">
+    <img src="https://hrmobiles.com/wp-content/uploads/2026/09/GoodWe-GW10K-ET-PLUS.webp" alt="GoodWe GW10K-ET PLUS hybrid inverter" width="420">
+  </a>
+</p>
+
 ## Features
 
 - The 4 Time-of-Use windows as entities: **start time**, **stop time**, a
@@ -222,6 +228,12 @@ slot_minutes: 15                                     # optional, timeline granul
 ```
 
 ## The price card
+
+<p align="center">
+  <a href="https://tibber.com/">
+    <img src="https://app.tibber.com/images/logos/tibber-logo.svg" alt="Tibber" width="150">
+  </a>
+</p>
 
 `custom:goodwe-tou-planner-card` draws its own compact price strip, but for a
 clearer two-day overview the integration also exposes the **Tibber** day-ahead
