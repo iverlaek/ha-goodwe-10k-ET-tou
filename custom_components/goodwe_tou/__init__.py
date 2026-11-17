@@ -32,6 +32,7 @@ from .const import (
     CONF_PORT,
     CONF_POWER_KW,
     CONF_PRICE_ENTITY,
+    CONF_PRICE_SOURCE,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_RECHECK_MINUTES,
@@ -44,12 +45,15 @@ from .const import (
     CONF_WINDOW_POWER,
     DEFAULT_COMM_ADDR,
     DEFAULT_PORT,
+    DEFAULT_PRICE_SOURCE,
     DEFAULT_RECHECK_MINUTES,
     DEFAULT_RETRIES,
     DEFAULT_TIBBER_HOME,
     DEFAULT_TIBBER_PRICES,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    PRICE_SOURCES,
+    PRICE_SOURCE_TIBBER,
 )
 from .coordinator import GoodweTouCoordinator, TibberPriceCoordinator, window_to_dict
 from .goodwe_udp import GoodweUdpClient
@@ -80,6 +84,7 @@ _FRONTEND_KEY = "__frontend__"
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_PRICE_ENTITY): cv.entity_id,
+        vol.Optional(CONF_PRICE_SOURCE): vol.In(PRICE_SOURCES),
         vol.Optional(CONF_SOC_ENTITY): cv.entity_id,
         vol.Optional(CONF_PV_ENTITY): cv.entity_id,
         vol.Optional(CONF_CAPACITY_KWH): vol.All(
@@ -251,9 +256,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # The Tibber price sensor has its own 15-minute coordinator so the price card
     # keeps working when the inverter is unreachable, and so the cloud is not hit
-    # on every poll. It is only created when the user asked for it; the first
-    # fetch never fails setup (a missing Tibber just leaves the sensor empty).
-    if entry.options.get(CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES):
+    # on every poll. It is created when the user asked for the price sensor *or*
+    # chose Tibber as the planner's price source; the first fetch never fails
+    # setup (a missing Tibber just leaves it empty).
+    price_source = entry.options.get(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE)
+    if entry.options.get(CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES) or (
+        price_source == PRICE_SOURCE_TIBBER
+    ):
         coordinator.price_coordinator = TibberPriceCoordinator(
             hass,
             home=str(entry.options.get(CONF_TIBBER_HOME, DEFAULT_TIBBER_HOME) or ""),

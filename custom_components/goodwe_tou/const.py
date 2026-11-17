@@ -22,6 +22,7 @@ DEFAULT_TIMEOUT: Final = 1.0
 DEFAULT_RETRIES: Final = 3
 
 # Options / service tuning for the cheapest-hours planner.
+CONF_PRICE_SOURCE: Final = "price_source"
 CONF_PRICE_ENTITY: Final = "price_entity"
 CONF_SOC_ENTITY: Final = "soc_entity"
 CONF_PV_ENTITY: Final = "pv_entity"
@@ -47,6 +48,13 @@ CONF_TIBBER_PRICES: Final = "tibber_prices"
 CONF_TIBBER_HOME: Final = "tibber_home"
 
 DEFAULT_PRICE_ENTITY: Final = "sensor.average_electricity_price"
+#: Where the planner reads its forecast: an existing price entity ("entity",
+#: ENTSO-e/Nordpool style) or the Tibber prices the integration fetches itself.
+DEFAULT_PRICE_SOURCE: Final = "entity"
+PRICE_SOURCE_ENTITY: Final = "entity"
+PRICE_SOURCE_TIBBER: Final = "tibber"
+#: Options allowed for the price source.
+PRICE_SOURCES: Final = (PRICE_SOURCE_ENTITY, PRICE_SOURCE_TIBBER)
 DEFAULT_SOC_ENTITY: Final = "sensor.battery_state_of_charge"
 DEFAULT_PV_ENTITY: Final = "sensor.energy_production_today_remaining"
 DEFAULT_CAPACITY_KWH: Final = 24.0

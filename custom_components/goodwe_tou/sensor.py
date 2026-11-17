@@ -12,7 +12,13 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, MODEL
+from .const import (
+    CONF_TIBBER_PRICES,
+    DEFAULT_TIBBER_PRICES,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL,
+)
 from .coordinator import GoodweTouCoordinator, TibberPriceCoordinator
 from .entity import GoodweTouEntity
 from .prices import current_price
@@ -33,7 +39,9 @@ async def async_setup_entry(
         TouCellVoltageSensor(coordinator),
         TouPlanSensor(coordinator),
     ]
-    if coordinator.price_coordinator is not None:
+    if coordinator.price_coordinator is not None and coordinator.config_entry.options.get(
+        CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES
+    ):
         entities.append(TouPricesSensor(coordinator, coordinator.price_coordinator))
     async_add_entities(entities)
 

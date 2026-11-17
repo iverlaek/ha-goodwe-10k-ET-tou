@@ -25,6 +25,7 @@
         "title": "GoodWe Time-of-Use options",
         "data": {
           "scan_interval": "Poll interval (seconds, 0 to disable)",
+          "price_source": "Price source for the planner (ENTSO-e or Tibber)",
           "price_entity": "Price entity (quarter-hourly forecast)",
           "soc_entity": "Battery state of charge entity",
           "pv_entity": "Remaining PV forecast entity",

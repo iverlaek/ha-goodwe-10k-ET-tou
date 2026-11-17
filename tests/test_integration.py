@@ -24,6 +24,7 @@ from custom_components.goodwe_tou.const import (
     CONF_DISCHARGE_WINDOWS,
     CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
+    CONF_PRICE_SOURCE,
     CONF_RECHECK_MINUTES,
     CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
@@ -1231,6 +1232,80 @@ async def test_tibber_price_sensor_can_be_disabled(hass: HomeAssistant, store: l
 
 
 @pytest.mark.asyncio
+async def test_price_source_tibber_plans_from_tibber_prices(
+    hass: HomeAssistant, store: list[int]
+):
+    """Choosing Tibber makes the planner use Tibber's prices, not the entity."""
+    from homeassistant.core import SupportsResponse
+
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    records = [
+        {
+            "start_time": (base + dt.timedelta(minutes=15 * i)).isoformat(),
+            "price": 0.10 if i < 8 else 0.40,
+        }
+        for i in range(96)
+    ]
+
+    async def _get_prices(call):
+        return {"prices": {"akkerv5": records}}
+
+    hass.services.async_register(
+        "tibber", "get_prices", _get_prices, supports_response=SupportsResponse.ONLY
+    )
+    # A decoy price entity with no usable forecast: if the planner read it, the
+    # service would raise instead of returning a plan.
+    hass.states.async_set(
+        "sensor.average_electricity_price", "0.1", {"prices": [], "unit_of_measurement": "€/kWh"}
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "40")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    entry = _entry_with_options(hass, **{CONF_PRICE_SOURCE: "tibber"})
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        response = await hass.services.async_call(
+            DOMAIN,
+            "calculate_cheapest_hours",
+            {},
+            blocking=True,
+            return_response=True,
+        )
+        await hass.async_block_till_done()
+
+    assert response["windows"]
+    assert response["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_tibber_source_without_the_price_sensor(hass: HomeAssistant, store: list[int]):
+    """Tibber as the price source needs no price sensor entity."""
+    from homeassistant.core import SupportsResponse
+
+    async def _get_prices(call):
+        return {"prices": {"akkerv5": []}}
+
+    hass.services.async_register(
+        "tibber", "get_prices", _get_prices, supports_response=SupportsResponse.ONLY
+    )
+    entry = _entry_with_options(
+        hass, **{CONF_TIBBER_PRICES: False, CONF_PRICE_SOURCE: "tibber"}
+    )
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    # The sensor is off, but the coordinator still exists for the planner.
+    assert hass.states.get("sensor.goodwe_time_of_use_stroomprijzen") is None
+    assert hass.data[DOMAIN][entry.entry_id].price_coordinator is not None
+
+
+@pytest.mark.asyncio
 async def test_config_flow_success(hass: HomeAssistant):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
@@ -1245,6 +1320,23 @@ async def test_config_flow_success(hass: HomeAssistant):
         )
     assert result["type"] == "create_entry"
     assert result["data"]["host"] == "192.168.20.13"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_offers_a_price_source(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The Configure dialog lets the user pick ENTSO-e or Tibber."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    keys = {str(key) for key in result["data_schema"].schema}
+    assert "price_source" in keys
+    assert "price_entity" in keys
 
 
 @pytest.mark.asyncio

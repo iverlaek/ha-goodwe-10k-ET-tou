@@ -280,9 +280,11 @@ series:
       });
 ```
 
-The planner is untouched: it keeps using `price_entity` (ENTSO-e/Nordpool by
-default). You *can* point `price_entity` at the Tibber sensor as well, because
-`prices` uses the same `{time, price}` format.
+The planner and the price card are independent. By default the planner reads its
+forecast from `price_entity` (ENTSO-e/Nordpool). Set the **Price source** option
+to **Tibber** to let the planner use the same Tibber prices the sensor exposes —
+no `price_entity` needed then. You can also point the card's `price_entity` at
+the Tibber sensor, because `prices` uses the same `{time, price}` format.
 
 ## The log card
 
@@ -340,6 +342,7 @@ the service:
 ```yaml
 action: goodwe_tou.set_cheapest_hours
 data:
+  price_source: entity                                 # entity (ENTSO-e/Nordpool) or tibber
   price_entity: sensor.average_electricity_price
   soc_entity: sensor.battery_state_of_charge
   pv_entity: sensor.energy_production_today_remaining
@@ -356,6 +359,7 @@ data:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `price_source` | `entity` | Where the planner reads its forecast: `entity` uses `price_entity` below (ENTSO-e/Nordpool style), `tibber` uses the day-ahead prices the integration fetches from Tibber itself |
 | `price_entity` | `sensor.average_electricity_price` | Entity exposing the quarter-hourly forecast — ENTSO-e (`prices` with `{time, price}`) or Nordpool (`raw_today`/`raw_tomorrow` with `{start, value}`) |
 | `soc_entity` | `sensor.battery_state_of_charge` | Battery state of charge (%) |
 | `pv_entity` | `sensor.energy_production_today_remaining` | Remaining PV production today (kWh) |

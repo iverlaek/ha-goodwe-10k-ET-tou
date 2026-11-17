@@ -37,6 +37,7 @@ from .const import (
     CONF_MIN_SOC,
     CONF_POWER_KW,
     CONF_PRICE_ENTITY,
+    CONF_PRICE_SOURCE,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_RTE,
@@ -57,6 +58,7 @@ from .const import (
     DEFAULT_MIN_CELL_VOLTAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_PRICE_ENTITY,
+    DEFAULT_PRICE_SOURCE,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
     DEFAULT_RTE,
@@ -72,6 +74,7 @@ from .const import (
     EXPORT_LIMIT_REGISTER,
     GENERAL_WORK_MODE,
     MAX_LOG_SIZE,
+    PRICE_SOURCE_TIBBER,
     WINDOWS,
     WORK_MODE_REGISTER,
 )
@@ -710,6 +713,42 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return slots
 
+    def _tibber_slots(self) -> list:
+        """The Tibber prices this integration fetched itself, as price slots.
+
+        Uses the dedicated price coordinator's data rather than the price sensor,
+        so the choice keeps working even when the sensor entity is disabled.
+        """
+        coordinator = self.price_coordinator
+        records = (coordinator.data or {}).get("prices") if coordinator else None
+        if not records:
+            raise HomeAssistantError(
+                "De Tibber-prijzen zijn nog niet opgehaald. Controleer of de "
+                "Tibber-integratie is ingesteld en probeer het zo opnieuw."
+            )
+        slots = slots_from_prices(records)
+        if not slots:
+            raise HomeAssistantError(
+                "De Tibber-prijzen bevatten geen bruikbare waarden"
+            )
+        return slots
+
+    def _price_slots_for(self, overrides: Mapping[str, Any]) -> list:
+        """The forecast slots for the configured price source.
+
+        ``price_source`` picks between an existing price entity (ENTSO-e/Nordpool
+        style, the default) and the Tibber prices the integration fetches itself.
+        """
+        source = overrides.get(CONF_PRICE_SOURCE) or self._option(
+            CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE
+        )
+        if source == PRICE_SOURCE_TIBBER:
+            return self._tibber_slots()
+        entity = overrides.get(CONF_PRICE_ENTITY) or self._option(
+            CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY
+        )
+        return self._price_slots(entity)
+
     def _float_state(self, entity_id: str, default: float) -> float:
         state = self._state(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
@@ -736,7 +775,6 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return overrides[key]
             return self._option(key, default)
 
-        price_entity = setting(CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY)
         soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
         pv_entity = setting(CONF_PV_ENTITY, DEFAULT_PV_ENTITY)
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
@@ -753,7 +791,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         window_power = int(setting(CONF_WINDOW_POWER, DEFAULT_WINDOW_POWER))
 
-        slots = self._price_slots(price_entity)
+        slots = self._price_slots_for(overrides)
         soc = self._float_state(soc_entity, target_soc)
         pv_remaining = self._float_state(pv_entity, 0.0)
 
@@ -995,9 +1033,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             plan = self._plan_cheapest_hours()
-            slots = self._price_slots(
-                self._option(CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY)
-            )
+            slots = self._price_slots_for({})
         except HomeAssistantError as err:
             _LOGGER.debug("Auto-replan skipped: %s", err)
             return None

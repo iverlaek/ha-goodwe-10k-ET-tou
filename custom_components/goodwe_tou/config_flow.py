@@ -12,6 +12,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_CAPACITY_KWH,
@@ -29,6 +30,7 @@ from .const import (
     CONF_PORT,
     CONF_POWER_KW,
     CONF_PRICE_ENTITY,
+    CONF_PRICE_SOURCE,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_RECHECK_MINUTES,
@@ -55,6 +57,7 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_POWER_KW,
     DEFAULT_PRICE_ENTITY,
+    DEFAULT_PRICE_SOURCE,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
     DEFAULT_RECHECK_MINUTES,
@@ -68,6 +71,9 @@ from .const import (
     DEFAULT_TIMEOUT,
     DEFAULT_WINDOW_POWER,
     DOMAIN,
+    PRICE_SOURCES,
+    PRICE_SOURCE_ENTITY,
+    PRICE_SOURCE_TIBBER,
     RECHECK_CHOICES,
     WORK_MODE_REGISTER,
 )
@@ -148,6 +154,24 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_SCAN_INTERVAL,
                     default=default(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                 ): vol.All(int, vol.Range(min=0, max=3600)),
+                vol.Optional(
+                    CONF_PRICE_SOURCE,
+                    default=default(CONF_PRICE_SOURCE, DEFAULT_PRICE_SOURCE),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=PRICE_SOURCE_ENTITY,
+                                label="ENTSO-e / price entity",
+                            ),
+                            selector.SelectOptionDict(
+                                value=PRICE_SOURCE_TIBBER,
+                                label="Tibber",
+                            ),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
                 vol.Optional(
                     CONF_PRICE_ENTITY,
                     default=default(CONF_PRICE_ENTITY, DEFAULT_PRICE_ENTITY),

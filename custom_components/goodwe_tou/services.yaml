@@ -6,6 +6,19 @@ set_cheapest_hours:
     and discharge in the most expensive ones, then write the result to the
     inverter. Discharging is capped so the battery is not drained too early.
   fields:
+    price_source:
+      name: Price source
+      description: >-
+        Where to read the forecast from: `entity` uses the price entity below
+        (ENTSO-e/Nordpool style), `tibber` uses the day-ahead prices the
+        integration fetches from Tibber itself. Defaults to the configured
+        option.
+      required: false
+      selector:
+        select:
+          options:
+            - entity
+            - tibber
     price_entity:
       name: Price entity
       description: >-
@@ -150,6 +163,19 @@ calculate_cheapest_hours:
     without writing anything to the inverter. The planner card uses this to fill
     its windows so you can review and adjust the plan before applying it.
   fields:
+    price_source:
+      name: Price source
+      description: >-
+        Where to read the forecast from: `entity` uses the price entity below
+        (ENTSO-e/Nordpool style), `tibber` uses the day-ahead prices the
+        integration fetches from Tibber itself. Defaults to the configured
+        option.
+      required: false
+      selector:
+        select:
+          options:
+            - entity
+            - tibber
     price_entity:
       name: Price entity
       description: >-
