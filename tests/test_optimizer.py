@@ -305,6 +305,27 @@ def test_build_plan_discharges_on_today_and_tomorrow():
     assert any("dinsdag" in reason.text for reason in plan.reasons)
 
 
+def test_plan_summary_names_the_day_of_each_window():
+    """The plan leads with a per-day overview: "vandaag ... en morgen ..."."""
+    start = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    prices = [0.05] * 96 + [0.30] * 96  # today cheap, tomorrow expensive
+    slots = _slots_from_prices(start, prices)
+    now = start + dt.timedelta(hours=12)
+    plan = optimizer.build_plan(
+        slots,
+        now,
+        soc=100,
+        capacity_kwh=24,
+        discharge_power_kw=6,
+        min_soc=20,
+        export_hours=1.0,
+    )
+    assert "vandaag" in plan.summary
+    assert "morgen" in plan.summary
+    # The overview leads; the general notes follow.
+    assert plan.notes[0].startswith("Vensterplan")
+
+
 def test_discharge_runs_do_not_fill_the_gap_between_peaks():
     """Two peaks with a cheap gap must stay one capped block, not be merged.
 

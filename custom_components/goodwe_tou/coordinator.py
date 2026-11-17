@@ -16,7 +16,6 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .activity import (
-    MAX_ENTRIES,
     filter_entries,
     make_entry,
     trim,
@@ -24,11 +23,17 @@ from .activity import (
     window_summary,
 )
 from .const import (
+    CELL_VOLTAGE_REGISTERS,
     CONF_AUTO_REPLAN,
     CONF_CAPACITY_KWH,
     CONF_CHARGE_KW,
+    CONF_CHARGE_WINDOWS,
     CONF_DISCHARGE_KW,
+    CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
+    CONF_EXPORT_LIMIT,
+    CONF_LOG_SIZE,
+    CONF_MIN_CELL_VOLTAGE,
     CONF_MIN_SOC,
     CONF_POWER_KW,
     CONF_PRICE_ENTITY,
@@ -39,11 +44,17 @@ from .const import (
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
+    CONF_WINDOW_POWER,
     DEFAULT_AUTO_REPLAN,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_CHARGE_KW,
+    DEFAULT_CHARGE_WINDOWS,
     DEFAULT_DISCHARGE_KW,
+    DEFAULT_DISCHARGE_WINDOWS,
     DEFAULT_EXPORT_HOURS,
+    DEFAULT_EXPORT_LIMIT,
+    DEFAULT_LOG_SIZE,
+    DEFAULT_MIN_CELL_VOLTAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_PRICE_ENTITY,
     DEFAULT_PV_ENTITY,
@@ -53,9 +64,14 @@ from .const import (
     DEFAULT_SOC_ENTITY,
     DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
+    DEFAULT_WINDOW_POWER,
     DOMAIN,
     ECO_WORK_MODE,
+    EXPORT_ENABLE_REGISTER,
+    EXPORT_ENABLED,
+    EXPORT_LIMIT_REGISTER,
     GENERAL_WORK_MODE,
+    MAX_LOG_SIZE,
     WINDOWS,
     WORK_MODE_REGISTER,
 )
@@ -111,7 +127,14 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self._io_lock = asyncio.Lock()
-        self.data = {"windows": {}, "work_mode": None, "activity": []}
+        self.data = {
+            "windows": {},
+            "work_mode": None,
+            "export_enabled": None,
+            "export_limit": None,
+            "min_cell_voltage": None,
+            "activity": [],
+        }
         self._activity: list[dict[str, Any]] = []
         self._activity_store: Store = Store(
             hass, 1, f"{DOMAIN}_activity_{entry.entry_id}"
@@ -132,7 +155,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if isinstance(stored, list):
             self._activity = [entry for entry in stored if isinstance(entry, dict)]
-            trim(self._activity, MAX_ENTRIES)
+            trim(self._activity, self._log_size())
         self._publish(self.data)
 
     def _schedule_save(self) -> None:
@@ -160,7 +183,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reason=reason,
             ),
         )
-        trim(self._activity, MAX_ENTRIES)
+        trim(self._activity, self._log_size())
         self._schedule_save()
         self._publish(self.data)
 
@@ -234,7 +257,22 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 base_for(number), registers[offset : offset + 4]
             )
         work_mode = self._read_block(WORK_MODE_REGISTER, 1)[0]
-        return {"windows": windows, "work_mode": work_mode}
+        export = self._read_block(EXPORT_ENABLE_REGISTER, 2)
+        # The low-cell guard is best effort: an inverter that does not answer the
+        # battery block must not take the whole integration down.
+        try:
+            cells = self._read_block(CELL_VOLTAGE_REGISTERS[0], 2)
+            plausible = [value for value in cells if value > 0]
+            cell_min = min(plausible) if plausible else None
+        except GoodweError:
+            cell_min = None
+        return {
+            "windows": windows,
+            "work_mode": work_mode,
+            "export_enabled": export[0],
+            "export_limit": export[1],
+            "min_cell_voltage": cell_min,
+        }
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -264,6 +302,23 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 mapping[base_for(number) + relative] = value
         return mapping
 
+    def _export_limit(self, overrides: Mapping[str, Any] | None = None) -> int:
+        """The configured grid export limit in watts."""
+        overrides = overrides or {}
+        value = overrides.get(CONF_EXPORT_LIMIT)
+        if value is None:
+            value = self._option(CONF_EXPORT_LIMIT, DEFAULT_EXPORT_LIMIT)
+        return max(0, min(0xFFFF, int(value)))
+
+    def _export_registers(
+        self, overrides: Mapping[str, Any] | None = None
+    ) -> dict[int, int]:
+        """The Feed Power enable + limit, so the discharge windows can export."""
+        return {
+            EXPORT_ENABLE_REGISTER: EXPORT_ENABLED,
+            EXPORT_LIMIT_REGISTER: self._export_limit(overrides),
+        }
+
     async def _write_verified(self, mapping: Mapping[int, int]) -> None:
         """Write registers, then read the schedule back and confirm them.
 
@@ -280,6 +335,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise HomeAssistantError(f"Could not verify the write: {err}") from err
             actual = self._registers_for(last["windows"])
             actual[WORK_MODE_REGISTER] = last["work_mode"]
+            actual[EXPORT_ENABLE_REGISTER] = last["export_enabled"]
+            actual[EXPORT_LIMIT_REGISTER] = last["export_limit"]
             if all(actual.get(register) == value for register, value in mapping.items()):
                 self._publish(last)
                 return
@@ -337,11 +394,53 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Write every window to the inverter and verify the result."""
         current = {number: self._window(number) for number in WINDOWS}
         targets = [window_summary(number, current[number]) for number in WINDOWS]
+        mapping = self._registers_for(current)
+        mapping.update(self._export_registers())
         await self._logged(
             "apply",
-            self._write_verified(self._registers_for(current)),
+            self._write_verified(mapping),
             windows=targets,
         )
+
+    async def async_set_export_limit(self, limit: int) -> None:
+        """Set the inverter's grid export limit and enable exporting.
+
+        The GoodWe blocks all export when the limit is 0, which also stops the
+        discharge windows: without it the battery only covers the house load.
+        """
+        mapping = {
+            EXPORT_ENABLE_REGISTER: EXPORT_ENABLED,
+            EXPORT_LIMIT_REGISTER: max(0, min(0xFFFF, int(limit))),
+        }
+        old = self.data.get("export_limit")
+        await self._logged(
+            "export_limit",
+            self._write_verified(mapping),
+            changes=[
+                {
+                    "field": "export_limit",
+                    "old": old,
+                    "new": mapping[EXPORT_LIMIT_REGISTER],
+                }
+            ],
+        )
+
+    async def async_apply_export_limit(self) -> None:
+        """Make sure the inverter allows the configured grid export.
+
+        The GoodWe blocks all export when the Feed Power limit is 0, which also
+        stops the discharge windows. The limit is only written when the inverter
+        differs from the configured value, so an ordinary restart leaves the
+        dongle alone.
+        """
+        target = self._export_registers()
+        current = {
+            EXPORT_ENABLE_REGISTER: self.data.get("export_enabled"),
+            EXPORT_LIMIT_REGISTER: self.data.get("export_limit"),
+        }
+        if all(current.get(register) == value for register, value in target.items()):
+            return
+        await self.async_set_export_limit(self._export_limit())
 
     async def async_set_windows(
         self, windows: Sequence[Mapping[str, Any]]
@@ -440,6 +539,21 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _option(self, key: str, default: Any) -> Any:
         return self.config_entry.options.get(key, default)
 
+    def _log_size(self) -> int:
+        """How many activity-log entries to keep (newest first)."""
+        value = int(self._option(CONF_LOG_SIZE, DEFAULT_LOG_SIZE))
+        return max(0, min(MAX_LOG_SIZE, value))
+
+    def _min_cell_voltage(self) -> int:
+        """The cell voltage (mV) below which the automation must stop."""
+        value = int(self._option(CONF_MIN_CELL_VOLTAGE, DEFAULT_MIN_CELL_VOLTAGE))
+        return max(0, value)
+
+    @property
+    def min_cell_voltage_threshold(self) -> int:
+        """The configured low-cell stop threshold, in mV."""
+        return self._min_cell_voltage()
+
     def _power_settings(
         self, overrides: Mapping[str, Any]
     ) -> tuple[float, float]:
@@ -528,6 +642,11 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
         pv_factor = float(setting(CONF_PV_FACTOR, DEFAULT_PV_FACTOR))
         rte = float(setting(CONF_RTE, DEFAULT_RTE))
+        charge_windows = int(setting(CONF_CHARGE_WINDOWS, DEFAULT_CHARGE_WINDOWS))
+        discharge_windows = int(
+            setting(CONF_DISCHARGE_WINDOWS, DEFAULT_DISCHARGE_WINDOWS)
+        )
+        window_power = int(setting(CONF_WINDOW_POWER, DEFAULT_WINDOW_POWER))
 
         slots = self._price_slots(price_entity)
         soc = self._float_state(soc_entity, target_soc)
@@ -547,6 +666,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             standby_kw=standby_kw,
             export_hours=None if export_hours is None else float(export_hours),
             rte=rte,
+            charge_windows=charge_windows,
+            discharge_windows=discharge_windows,
+            power_percent=window_power,
         )
 
     async def async_calculate_cheapest_hours(
@@ -622,9 +744,11 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.data["windows"].update(after)
         self._publish(self.data)
 
+        mapping = self._registers_for(after)
+        mapping.update(self._export_registers(overrides))
         await self._logged(
             action,
-            self._write_verified(self._registers_for(after)),
+            self._write_verified(mapping),
             changes=changes,
             windows=targets,
             reason=reason,
@@ -697,6 +821,37 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pass
         return " ".join(part for part in parts if part)
 
+    def _cell_guard_reason(self) -> str | None:
+        """Why the automation must stop because a battery cell is (nearly) flat.
+
+        The state of charge is unreliable, so the lowest cell voltage is the real
+        "the battery is empty" signal. When it trips, the automation stops and the
+        user is pointed at the SEMS/SolarGo app instead of the integration forcing
+        a charge.
+        """
+        threshold = self._min_cell_voltage()
+        if threshold <= 0:
+            return None
+        voltage = self.data.get("min_cell_voltage")
+        if voltage is None or voltage >= threshold:
+            return None
+        return (
+            f"Automatisering gestopt: laagste celspanning {voltage} mV is onder de "
+            f"drempel van {threshold} mV. Laad de batterij bij via de SEMS/SolarGo "
+            "app en zet de automatisering daarna weer aan."
+        )
+
+    def _apply_cell_guard(self) -> bool:
+        """Stop the automation when the battery is too flat. Returns ``True``."""
+        reason = self._cell_guard_reason()
+        if reason is None:
+            return False
+        if self.auto_replan_enabled:
+            self.auto_replan_enabled = False
+            self._record("guard", result="error", reason=reason)
+            self._publish(self.data)
+        return True
+
     async def async_auto_replan(self, *, force: bool = False) -> Plan | None:
         """Re-check the plan and apply it when it is no longer optimal.
 
@@ -706,6 +861,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         auto-replanning is paused).
         """
         if not self.auto_replan_enabled and not force:
+            return None
+        if self._apply_cell_guard():
             return None
         current = self._current_windows()
         if current is None:

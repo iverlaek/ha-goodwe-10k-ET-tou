@@ -26,7 +26,7 @@ class TouWindow:
 
     @property
     def mask(self) -> int:
-        """Day bitmask (Mon = bit 0 .. Sun = bit 6)."""
+        """Day bitmask (Sun = bit 0 .. Sat = bit 6)."""
         return days_to_mask(self.days)
 
     @property
@@ -135,6 +135,17 @@ def days_to_mask(text: str) -> int:
         if name in normalized:
             mask |= 1 << index
     return mask
+
+
+def day_bit(day: dt.date | int) -> int:
+    """The inverter's day bit for a date or weekday index.
+
+    Sunday is bit 0 and Saturday bit 6, so this is *not* the same as
+    ``1 << day.weekday()`` (which numbers Monday 0). An :class:`int` is treated
+    as a Python weekday index (Monday 0 .. Sunday 6).
+    """
+    weekday = day.weekday() if isinstance(day, dt.date) else int(day)
+    return 1 << ((weekday + 1) % 7)
 
 
 def mask_to_days(mask: int) -> str:

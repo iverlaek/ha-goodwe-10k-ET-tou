@@ -15,11 +15,11 @@ import datetime as dt
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .const import WINDOWS
+from .const import MAX_LOG_SIZE, WINDOWS
 from .registers import TouWindow
 
-#: How many entries the log keeps (newest first).
-MAX_ENTRIES = 1000
+#: Hard cap on how many entries the log keeps (newest first).
+MAX_ENTRIES = MAX_LOG_SIZE
 
 #: Known action keys (used by the cards for their labels).
 ACTIONS = (
@@ -31,6 +31,8 @@ ACTIONS = (
     "window_power",
     "window_days",
     "eco",
+    "export_limit",
+    "guard",
 )
 
 

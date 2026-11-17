@@ -45,18 +45,31 @@ def test_switch_encode_decode():
 def test_days_to_mask():
     assert registers.days_to_mask("all") == 0x7F
     assert registers.days_to_mask("mon-sun") == 0x7F
-    assert registers.days_to_mask("weekdays") == 0x1F
-    assert registers.days_to_mask("weekend") == 0x60
-    assert registers.days_to_mask("sat") == 0x20
-    assert registers.days_to_mask("mon,wed,fri") == 0x15
+    assert registers.days_to_mask("weekdays") == 0x3E
+    assert registers.days_to_mask("weekend") == 0x41
+    assert registers.days_to_mask("sat") == 0x40
+    assert registers.days_to_mask("mon,wed,fri") == 0x2A
     assert registers.days_to_mask("none") == 0
     assert registers.days_to_mask("") == 0
 
 
 def test_mask_to_days():
-    assert registers.mask_to_days(0x7F) == "mon,tue,wed,thu,fri,sat,sun"
-    assert registers.mask_to_days(0x20) == "sat"
+    assert registers.mask_to_days(0x7F) == "sun,mon,tue,wed,thu,fri,sat"
+    assert registers.mask_to_days(0x20) == "fri"
     assert registers.mask_to_days(0) == "none"
+
+
+def test_day_bit_is_sunday_first():
+    # Sunday is bit 0, Saturday bit 6 (official register doc: "0~6bit means
+    # Sunday~Saturday"), so a Python weekday index has to be shifted.
+    assert registers.day_bit(dt.date(2026, 11, 15)) == 0x01  # Sunday
+    assert registers.day_bit(dt.date(2026, 11, 16)) == 0x02  # Monday
+    assert registers.day_bit(dt.date(2026, 11, 21)) == 0x40  # Saturday
+    # plain weekday indices (Monday 0 .. Sunday 6)
+    assert registers.day_bit(0) == 0x02
+    assert registers.day_bit(6) == 0x01
+    # a datetime is a date subclass and must work too
+    assert registers.day_bit(dt.datetime(2026, 11, 16, 12, 0)) == 0x02
 
 
 def test_window_round_trip_snapshot():
@@ -80,7 +93,7 @@ def test_window_round_trip_snapshot():
     assert decoded.stop == dt.time(6, 0)
     assert decoded.mode == "charge"
     assert decoded.power == 100
-    assert decoded.days == "mon,tue,wed,thu,fri,sat,sun"
+    assert decoded.days == "sun,mon,tue,wed,thu,fri,sat"
 
 
 def test_decode_disabled_window_preserves_power():

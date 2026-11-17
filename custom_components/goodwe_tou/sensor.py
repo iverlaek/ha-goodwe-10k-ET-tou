@@ -24,7 +24,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: GoodweTouCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([TouActivitySensor(coordinator)])
+    async_add_entities(
+        [TouActivitySensor(coordinator), TouCellVoltageSensor(coordinator)]
+    )
 
 
 class TouActivitySensor(GoodweTouEntity, SensorEntity):
@@ -56,3 +58,27 @@ class TouActivitySensor(GoodweTouEntity, SensorEntity):
             "last_action": latest.get("action") if latest else None,
             "last_result": latest.get("result") if latest else None,
         }
+
+
+class TouCellVoltageSensor(GoodweTouEntity, SensorEntity):
+    """The lowest battery cell voltage, with the guard threshold as an attribute.
+
+    The state of charge can look healthy while one cell is nearly empty, so this
+    is the value the automation watches. When it drops below ``threshold`` the
+    re-check stops itself and the activity log points at the SEMS/SolarGo app.
+    """
+
+    _attr_native_unit_of_measurement = "mV"
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator, "min_cell_voltage", "Laagste celspanning", "mdi:battery-heart"
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        return self.coordinator.data.get("min_cell_voltage")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"threshold": self.coordinator.min_cell_voltage_threshold}

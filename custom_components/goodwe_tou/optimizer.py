@@ -43,7 +43,7 @@ from .const import (
     SLOT_MINUTES,
     WINDOWS,
 )
-from .registers import TouWindow, mask_to_days
+from .registers import TouWindow, day_bit, mask_to_days
 
 _NL_WEEKDAYS = (
     "maandag",
@@ -54,6 +54,23 @@ _NL_WEEKDAYS = (
     "zaterdag",
     "zondag",
 )
+
+
+def _day_label(day: dt.date, today: dt.date) -> str:
+    """A short Dutch label for ``day`` relative to ``today``.
+
+    The price horizon only spans today and tomorrow, so "vandaag"/"morgen" read
+    more naturally than a weekday name. Anything further out (or in the past)
+    falls back to the weekday.
+    """
+    delta = (day - today).days
+    if delta == 0:
+        return "vandaag"
+    if delta == 1:
+        return "morgen"
+    if delta == -1:
+        return "gisteren"
+    return _NL_WEEKDAYS[day.weekday()]
 
 
 @dataclass(frozen=True)
@@ -185,7 +202,7 @@ def _make_window(
         stop=stop_time,
         mode=mode,
         power=min(100, max(1, int(power_percent))),
-        days=mask_to_days(1 << start_dt.weekday()),
+        days=mask_to_days(day_bit(start_dt)),
     )
 
 
@@ -208,6 +225,38 @@ def _run_to_windows(
             windows.append(window)
         cursor = boundary
     return windows
+
+
+def _plan_overview(
+    planned: Sequence[tuple[str, tuple[int, int], float]],
+    slots: Sequence[PriceSlot],
+    slot_minutes: int,
+    today: dt.date,
+) -> str:
+    """A per-day summary of the plan, e.g. ``vandaag: ontladen 17:30-18:30``.
+
+    The planner reasons name the day of their own window, but a reader who looks
+    at the plan as a whole still has to piece together which day each window runs
+    on. This one line does that for them.
+    """
+    if not planned:
+        return ""
+    by_day: dict[dt.date, list[str]] = {}
+    for mode, run, _power in planned:
+        start_dt = slots[run[0]].time
+        stop_dt = slots[run[1]].time + dt.timedelta(minutes=slot_minutes)
+        day = start_dt.date()
+        if stop_dt.date() != day:
+            stop_dt = dt.datetime.combine(day, dt.time(23, 59))
+        verb = "laden" if mode == "charge" else "ontladen"
+        by_day.setdefault(day, []).append(
+            f"{verb} {start_dt:%H:%M}\u2013{stop_dt:%H:%M}"
+        )
+    parts = [
+        f"{_day_label(day, today)}: " + ", ".join(items)
+        for day, items in sorted(by_day.items())
+    ]
+    return "Vensterplan \u2014 " + "; ".join(parts) + "."
 
 
 def _select_indices(
@@ -577,6 +626,12 @@ def build_plan(
     if not windows:
         notes.append("Geen vensters nodig: de batterij is op doel en er valt niets te ontladen.")
 
+    # Lead with a per-day overview so the plan as a whole names which day each
+    # window runs on ("vandaag ... en morgen ..."), not just each window's own reason.
+    overview = _plan_overview(planned, future, slot_minutes, now.date())
+    if overview:
+        notes.insert(0, overview)
+
     windows = windows[:budget]
     reasons = [reason for reason in reasons if reason.window <= budget]
     return Plan(windows=windows, reasons=reasons, notes=notes)
@@ -646,7 +701,7 @@ def windows_cost(
         if slot.time < now:
             continue
         moment = slot.time.time()
-        weekday_bit = 1 << slot.time.weekday()
+        weekday_bit = day_bit(slot.time)
         for window in windows:
             if not window.enabled or not (window.mask & weekday_bit):
                 continue
@@ -710,7 +765,7 @@ def forecast_soc(
         hours = (boundary - moment).total_seconds() / 3600.0
         delta = -base_load_kw * hours / capacity_kwh * 100.0
         day = moment.replace(hour=0, minute=0, second=0, microsecond=0)
-        weekday_bit = 1 << day.weekday()
+        weekday_bit = day_bit(day)
         for window in windows:
             if not window.enabled or not (window.mask & weekday_bit):
                 continue

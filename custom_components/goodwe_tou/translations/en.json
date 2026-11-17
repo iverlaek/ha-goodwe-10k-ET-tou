@@ -34,10 +34,17 @@
           "discharge_kw": "Max discharge power (kW)",
           "standby_kw": "House standby consumption (kW)",
           "export_hours": "Max export duration at full power (hours)",
+          "export_limit": "Grid export limit (W)",
           "target_soc": "Target state of charge (%)",
           "min_soc": "Minimum state of charge (%)",
           "pv_factor": "PV credit factor (0-1)",
-          "rte": "Battery round-trip efficiency (0.1-1)"
+          "rte": "Battery round-trip efficiency (0.1-1)",
+          "charge_windows": "Number of charge windows (0-4)",
+          "discharge_windows": "Number of discharge windows (0-4)",
+          "window_power": "Power of planned windows (%)",
+          "recheck_minutes": "Re-check interval (minutes)",
+          "log_size": "Activity log size (entries)",
+          "min_cell_voltage": "Low-cell stop threshold (mV, 0 = off)"
         }
       }
     }

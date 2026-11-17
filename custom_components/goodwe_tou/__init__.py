@@ -19,22 +19,30 @@ from .activity import MAX_ENTRIES
 from .const import (
     CONF_CAPACITY_KWH,
     CONF_CHARGE_KW,
+    CONF_CHARGE_WINDOWS,
     CONF_COMM_ADDR,
     CONF_DISCHARGE_KW,
+    CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
+    CONF_EXPORT_LIMIT,
     CONF_HOST,
+    CONF_LOG_SIZE,
+    CONF_MIN_CELL_VOLTAGE,
     CONF_MIN_SOC,
     CONF_PORT,
     CONF_POWER_KW,
     CONF_PRICE_ENTITY,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
+    CONF_RECHECK_MINUTES,
     CONF_RTE,
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
+    CONF_WINDOW_POWER,
     DEFAULT_COMM_ADDR,
     DEFAULT_PORT,
+    DEFAULT_RECHECK_MINUTES,
     DEFAULT_RETRIES,
     DEFAULT_TIMEOUT,
     DOMAIN,
@@ -88,6 +96,9 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         vol.Optional(CONF_EXPORT_HOURS): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=24)
         ),
+        vol.Optional(CONF_EXPORT_LIMIT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=65535)
+        ),
         vol.Optional(CONF_TARGET_SOC): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
         ),
@@ -99,6 +110,18 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_RTE): vol.All(
             vol.Coerce(float), vol.Range(min=0.1, max=1)
+        ),
+        vol.Optional(CONF_CHARGE_WINDOWS): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=4)
+        ),
+        vol.Optional(CONF_DISCHARGE_WINDOWS): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=4)
+        ),
+        vol.Optional(CONF_WINDOW_POWER): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=100)
+        ),
+        vol.Optional(CONF_MIN_CELL_VOLTAGE): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=4000)
         ),
     }
 )
@@ -195,6 +218,18 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         )
 
 
+def _recheck_minutes(entry: ConfigEntry) -> list[int]:
+    """The minutes past the hour on which to re-check the plan.
+
+    The interval is configurable but has to divide an hour so the schedule stays
+    aligned with the quarter-hourly prices.
+    """
+    interval = int(entry.options.get(CONF_RECHECK_MINUTES, DEFAULT_RECHECK_MINUTES))
+    if interval <= 0 or 60 % interval:
+        interval = DEFAULT_RECHECK_MINUTES
+    return list(range(0, 60, interval))
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up GoodWe Time-of-Use from a config entry."""
     client = GoodweUdpClient(
@@ -208,6 +243,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await coordinator.async_load_activity()
     await coordinator.async_config_entry_first_refresh()
+
+    # The GoodWe blocks all export when its Feed Power limit is 0, which silently
+    # stops the discharge windows. Push the configured limit on every start and
+    # options change, but never let a failure keep the integration from loading.
+    try:
+        await coordinator.async_apply_export_limit()
+    except Exception:
+        _LOGGER.warning("Could not set the grid export limit", exc_info=True)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -224,7 +267,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(
         async_track_time_change(
-            hass, _auto_replan, minute=[0, 15, 30, 45], second=0
+            hass, _auto_replan, minute=_recheck_minutes(entry), second=0
         )
     )
 
