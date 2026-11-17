@@ -20,7 +20,7 @@
  *   limit: 200                                # optional, entries fetched
  */
 
-const CARD_VERSION = "0.7.4";
+const CARD_VERSION = "0.7.5";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 

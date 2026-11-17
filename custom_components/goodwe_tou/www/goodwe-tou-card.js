@@ -22,7 +22,7 @@
  *   hours_back: 24                                # optional, measured hours shown
  */
 
-const CARD_VERSION = "0.7.4";
+const CARD_VERSION = "0.7.5";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
 const HOURS_BACK_DEFAULT = 24;
@@ -134,6 +134,7 @@ class GoodweTouCard extends HTMLElement {
     this._built = false;
     this._history = [];
     this._forecast = [];
+    this._forecastLoading = false;
     this._lastFetch = 0;
     this._fetching = false;
   }
@@ -247,8 +248,12 @@ class GoodweTouCard extends HTMLElement {
     if (this._lastFetch && now - this._lastFetch < 5 * 60 * 1000) return;
     this._lastFetch = now;
     this._fetching = true;
+    // The SoC forecast service can take a while; show that it is being computed.
+    this._forecastLoading = true;
+    this._renderChart();
     Promise.all([this._loadHistory(), this._loadForecast()]).finally(() => {
       this._fetching = false;
+      this._forecastLoading = false;
       this._renderChart();
     });
   }
@@ -480,9 +485,37 @@ class GoodweTouCard extends HTMLElement {
       true
     );
 
+    // While the forecast is still being computed, mark that part in orange.
+    if (this._forecastLoading && !this._forecast.length) {
+      const fx = x(now);
+      const fw = Math.max(0, padL + plotW - fx);
+      host.appendChild(
+        svgEl("rect", {
+          x: fx,
+          y: padT,
+          width: fw,
+          height: plotH,
+          fill: "#ff9800",
+          opacity: 0.18,
+        })
+      );
+      const loading = svgEl("text", {
+        x: fx + fw / 2,
+        y: padT + plotH / 2,
+        "text-anchor": "middle",
+        "font-size": "12",
+        "font-weight": "600",
+        fill: "#ff9800",
+      });
+      loading.textContent = "wordt berekend \u2026";
+      host.appendChild(loading);
+    }
+
     if (this._noteEl) {
       if (!this._lastFetch) {
         this._noteEl.textContent = "Gegevens laden\u2026";
+      } else if (this._forecastLoading) {
+        this._noteEl.textContent = "Voorspelling wordt berekend\u2026";
       } else if (!this._history.length && !this._forecast.length) {
         this._noteEl.textContent =
           "Geen SoC-gegevens: controleer soc_entity en de recorder.";
