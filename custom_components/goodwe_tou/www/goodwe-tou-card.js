@@ -8,10 +8,11 @@
  * Ships with the integration and is loaded automatically. Configure with:
  *
  *   type: custom:goodwe-tou-card
- *   title: GoodWe Time-of-Use          # optional
+ *   title: GoodWe Time-of-Use          # optional; " (Version x.y.z)" is appended
  *   prefix: goodwe_time_of_use         # optional entity-id prefix
  */
 
+const CARD_VERSION = "0.3.3";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const WINDOW_COUNT = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -119,7 +120,7 @@ class GoodweTouCard extends HTMLElement {
         <div class="error" id="error"></div>
       </ha-card>
     `;
-    root.querySelector(".title").textContent = this._title;
+    root.querySelector(".title").textContent = `${this._title} (Version ${CARD_VERSION})`;
 
     const rowsEl = root.querySelector(".rows");
     this._rows = [];
@@ -304,4 +305,4 @@ window.customCards.push({
   preview: false,
 });
 
-console.info("%c GOODWE-TOU-CARD %c v0.3.2 ", "background:#2e7d32;color:#fff;font-weight:bold", "background:#333;color:#fff");
+console.info(`%c GOODWE-TOU-CARD %c v${CARD_VERSION} `, "background:#2e7d32;color:#fff;font-weight:bold", "background:#333;color:#fff");

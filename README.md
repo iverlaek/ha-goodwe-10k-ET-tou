@@ -125,7 +125,7 @@ add it to a dashboard:
 
 ```yaml
 type: custom:goodwe-tou-card
-title: GoodWe Time-of-Use        # optional
+title: GoodWe Time-of-Use        # optional; " (Version x.y.z)" is appended
 prefix: goodwe_time_of_use       # optional entity-id prefix
 ```
 
@@ -172,7 +172,7 @@ The number of windows in use is chosen with the **Aantal vensters** selector
 
 ```yaml
 type: custom:goodwe-tou-planner-card
-title: Laadplanning                                  # optional
+title: Laadplanning                                  # optional; " (Version x.y.z)" is appended
 prefix: goodwe_time_of_use                           # optional
 price_entity: sensor.average_electricity_price       # optional, for the grey-out
 windows: 4                                           # optional, 1..4

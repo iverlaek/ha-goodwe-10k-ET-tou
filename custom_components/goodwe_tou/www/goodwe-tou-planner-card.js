@@ -41,7 +41,7 @@
  * Configure with:
  *
  *   type: custom:goodwe-tou-planner-card
- *   title: Laadplanning                                  # optional
+ *   title: Laadplanning                                  # optional; " (Version x.y.z)" is appended
  *   prefix: goodwe_time_of_use                           # optional
  *   price_entity: sensor.average_electricity_price       # optional
  *   windows: 4                                           # optional, 1..4
@@ -49,6 +49,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
+const CARD_VERSION = "0.3.3";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -346,7 +347,7 @@ class GoodweTouPlannerCard extends HTMLElement {
         <div class="error" id="error"></div>
       </ha-card>
     `;
-    root.querySelector(".title").textContent = this._title;
+    root.querySelector(".title").textContent = `${this._title} (Version ${CARD_VERSION})`;
     this._card = root.querySelector("ha-card");
     this._axisEl = root.querySelector("#axis");
     this._pricesEl = root.querySelector("#prices");
@@ -1123,7 +1124,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c GOODWE-TOU-PLANNER %c v0.3.2 ",
+  `%c GOODWE-TOU-PLANNER %c v${CARD_VERSION} `,
   "background:#2e7d32;color:#fff;font-weight:bold",
   "background:#333;color:#fff"
 );
