@@ -12,9 +12,12 @@
  *
  * Every window is edited in the same row below the timeline:
  *   - an Actief / Inactief button (an inactive window is greyed out);
- *   - a charge slider and a discharge slider (0-100 %), shown next to each
- *     other. The two are mutually exclusive: setting one clears the other,
- *     because the inverter stores a single signed power per window;
+ *   - a power field (0-100 %) that lives in one of two labelled columns:
+ *     "Laden" on the left and "Ontladen" on the right. The field is shown in
+ *     the column that matches the window's direction and the empty cell in the
+ *     other column is clickable: clicking it moves the field there. A window
+ *     therefore only ever has one direction, because the inverter stores a
+ *     single signed power per window;
  *   - a start and a stop time;
  *   - seven day chips.
  *
@@ -27,8 +30,10 @@
  *   - "Toepassen" writes the whole plan through goodwe_tou.set_windows.
  *
  * Design rules (see the integration README):
- *   - only the period from now until midnight tomorrow is shown on the timeline;
- *   - tomorrow is greyed out until tomorrow's prices are known (usually ~15:00);
+ *   - the timeline sits at the very top and only covers the period from now
+ *     until midnight tomorrow;
+ *   - tomorrow is greyed out, with a warning triangle, until tomorrow's prices
+ *     are known (usually ~15:00); the bar stays visible but grey;
  *   - overlapping windows are impossible: dragging a handle stops at the
  *     neighbouring window;
  *   - a window lives inside a single day; it never crosses midnight.
@@ -141,7 +146,8 @@ const STYLES = `
   .axis { position: relative; margin-bottom: 4px; }
   .axis .dayrow { position: relative; height: 20px; }
   .axis .dayband { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: .74rem; font-weight: 600; color: var(--secondary-text-color); background: var(--secondary-background-color); border-radius: 6px; overflow: hidden; }
-  .axis .dayband.grey { opacity: .45; }
+  .axis .dayband.grey { background: var(--disabled-color, #9e9e9e); color: var(--text-primary-color, #fff); opacity: .5; }
+  .axis .warnmark { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 1rem; line-height: 1; color: var(--warning-color, #ff9800); text-shadow: 0 0 3px var(--card-background-color, #fff); cursor: help; }
   .axis .tickrow { position: relative; height: 16px; margin-top: 2px; }
   .axis .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--divider-color); opacity: .7; }
   .axis .tick.major { width: 2px; opacity: 1; }
@@ -149,6 +155,7 @@ const STYLES = `
 
   .prices { position: relative; height: 44px; margin: 2px 0 8px; border-radius: 8px; background: var(--secondary-background-color); overflow: hidden; }
   .pbar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; opacity: .85; }
+  .prices .pgrey { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(128,128,128,.22) 0 6px, transparent 6px 12px); pointer-events: none; }
 
   .row { padding: 10px 0; border-top: 1px solid var(--divider-color); transition: opacity .15s; }
   .row:first-child { border-top: none; }
@@ -179,12 +186,23 @@ const STYLES = `
   input[type=time] { flex: 1; min-width: 0; background: var(--secondary-background-color); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 5px 8px; font: inherit; }
   .dash { color: var(--secondary-text-color); }
 
-  .sld { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: .8rem; color: var(--secondary-text-color); }
-  .sld > span { width: 62px; flex: none; }
-  .sld input[type=range] { flex: 1; min-width: 0; }
-  .sld.charge input[type=range] { accent-color: #c62828; }
-  .sld.discharge input[type=range] { accent-color: #2e7d32; }
-  .sld > b { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
+  .colheads { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0 2px; font-size: .74rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .colheads .ch { text-align: center; padding: 5px 0; border-radius: 8px; }
+  .colheads .ch.charge { color: #c62828; background: rgba(198, 40, 40, .12); }
+  .colheads .ch.discharge { color: #2e7d32; background: rgba(46, 125, 50, .14); }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+  .cell { min-width: 0; display: flex; align-items: center; }
+  .cell .sld { display: none; flex: 1; align-items: center; gap: 8px; font-size: .8rem; color: var(--secondary-text-color); }
+  .cell.active .sld { display: flex; }
+  .cell .sld input[type=range] { flex: 1; min-width: 0; }
+  .cell.charge .sld input[type=range] { accent-color: #c62828; }
+  .cell.discharge .sld input[type=range] { accent-color: #2e7d32; }
+  .cell .sld > b { width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
+  .cell .placeholder { display: flex; flex: 1; align-items: center; justify-content: center; height: 34px; border: 1px dashed var(--divider-color); border-radius: 8px; background: transparent; color: var(--secondary-text-color); font: inherit; font-size: .78rem; cursor: pointer; }
+  .cell.active .placeholder { display: none; }
+  .cell .placeholder:hover { border-color: var(--primary-color); color: var(--primary-color); }
+  .row.off .cell .placeholder { opacity: .55; }
 
   .days { display: flex; gap: 4px; margin-top: 8px; }
   .chip { flex: 1; padding: 5px 0; border-radius: 6px; border: 1px solid var(--divider-color); background: transparent; color: var(--secondary-text-color); font: inherit; font-size: .72rem; cursor: pointer; }
@@ -304,6 +322,8 @@ class GoodweTouPlannerCard extends HTMLElement {
             </span>
           </label>
         </div>
+        <div class="axis" id="axis"></div>
+        <div class="prices" id="prices"></div>
         <div class="toolbar">
           <div class="seg" id="viewseg">
             <button data-view="now">Vandaag + morgen</button>
@@ -312,8 +332,10 @@ class GoodweTouPlannerCard extends HTMLElement {
           <div class="count" id="countseg"><span>Aantal vensters</span></div>
         </div>
         <div class="hint" id="hint"></div>
-        <div class="axis" id="axis"></div>
-        <div class="prices" id="prices"></div>
+        <div class="colheads">
+          <span class="ch charge">Laden</span>
+          <span class="ch discharge">Ontladen</span>
+        </div>
         <div class="rows" id="rows"></div>
         <div class="week" id="week"></div>
         <div class="actions">
@@ -399,8 +421,16 @@ class GoodweTouPlannerCard extends HTMLElement {
         <span class="dash">&ndash;</span>
         <input type="time" class="stop">
       </div>
-      <label class="sld charge"><span>Laden</span><input type="range" min="0" max="100" step="5" class="charge"><b class="chargeval">100%</b></label>
-      <label class="sld discharge"><span>Ontladen</span><input type="range" min="0" max="100" step="5" class="discharge"><b class="dischargeval">0%</b></label>
+      <div class="cols">
+        <div class="cell charge" data-dir="charge">
+          <label class="sld charge"><input type="range" min="0" max="100" step="5" class="charge"><b class="chargeval">0%</b></label>
+          <button class="placeholder" title="Klik om dit venster te laten laden">laden</button>
+        </div>
+        <div class="cell discharge" data-dir="discharge">
+          <label class="sld discharge"><input type="range" min="0" max="100" step="5" class="discharge"><b class="dischargeval">0%</b></label>
+          <button class="placeholder" title="Klik om dit venster te laten ontladen">ontladen</button>
+        </div>
+      </div>
       <div class="days"></div>
     `;
     const refs = {
@@ -414,6 +444,8 @@ class GoodweTouPlannerCard extends HTMLElement {
       empty: row.querySelector(".empty"),
       startInput: row.querySelector("input.start"),
       stopInput: row.querySelector("input.stop"),
+      chargeCell: row.querySelector(".cell.charge"),
+      dischargeCell: row.querySelector(".cell.discharge"),
       chargeInput: row.querySelector("input.charge"),
       dischargeInput: row.querySelector("input.discharge"),
       chargeVal: row.querySelector(".chargeval"),
@@ -426,6 +458,11 @@ class GoodweTouPlannerCard extends HTMLElement {
     refs.stopInput.addEventListener("change", () => this._setStop(index));
     refs.chargeInput.addEventListener("input", () => this._setCharge(index));
     refs.dischargeInput.addEventListener("input", () => this._setDischarge(index));
+    for (const cell of [refs.chargeCell, refs.dischargeCell]) {
+      cell
+        .querySelector(".placeholder")
+        .addEventListener("click", () => this._setMode(index, cell.dataset.dir));
+    }
     refs.bars.addEventListener("pointerdown", (event) => this._startDrag(event, index));
 
     const daysEl = row.querySelector(".days");
@@ -568,7 +605,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     } else {
       this._hintEl.className = "hint warn";
       this._hintEl.textContent =
-        "Morgen is nog grijs: prijzen van morgen zijn nog niet bekend (meestal rond 15:00).";
+        "\u26a0 Prijzen van morgen zijn nog niet bekend (meestal rond 15:00); de tijdbalk is daar grijs.";
     }
 
     if (this._view === "now") {
@@ -599,6 +636,11 @@ class GoodweTouPlannerCard extends HTMLElement {
 
     row.activeBtn.textContent = seg.enabled ? "Actief" : "Inactief";
     row.activeBtn.classList.toggle("on", seg.enabled);
+
+    const showCharge = seg.enabled && mode === "charge";
+    const showDischarge = seg.enabled && mode === "discharge";
+    row.chargeCell.classList.toggle("active", showCharge);
+    row.dischargeCell.classList.toggle("active", showDischarge);
 
     if (active !== row.startInput) row.startInput.value = fmtHM(seg.startHM);
     if (active !== row.stopInput) row.stopInput.value = fmtHM(seg.stopHM);
@@ -734,6 +776,15 @@ class GoodweTouPlannerCard extends HTMLElement {
       el.textContent = label;
       dayrow.appendChild(el);
     }
+    if (!this._tomorrowKnown) {
+      const mid = this._pct(this._tMid);
+      const mark = document.createElement("div");
+      mark.className = "warnmark";
+      mark.style.left = `${mid + (100 - mid) / 2}%`;
+      mark.textContent = "\u26a0";
+      mark.title = "Prijzen van morgen zijn nog niet bekend";
+      dayrow.appendChild(mark);
+    }
     axis.appendChild(dayrow);
 
     const tickrow = document.createElement("div");
@@ -791,6 +842,14 @@ class GoodweTouPlannerCard extends HTMLElement {
       bar.title = `${hm(slot.t)} \u00b7 ${slot.price.toFixed(3)}`;
       host.appendChild(bar);
     }
+    if (!this._tomorrowKnown) {
+      const mid = this._pct(this._tMid);
+      const veil = document.createElement("div");
+      veil.className = "pgrey";
+      veil.style.left = `${mid}%`;
+      veil.style.width = `${100 - mid}%`;
+      host.appendChild(veil);
+    }
   }
 
   // -- editing -----------------------------------------------------------
@@ -802,6 +861,29 @@ class GoodweTouPlannerCard extends HTMLElement {
     if (seg.enabled && seg.charge === 0 && seg.discharge === 0) {
       seg.charge = 100;
     }
+    this._dirty = true;
+    this._render();
+  }
+
+  _setMode(index, dir) {
+    const seg = this._segs[index];
+    if (!seg) return;
+    const current = this._mode(seg);
+    const carried =
+      current === "charge"
+        ? seg.charge
+        : current === "discharge"
+          ? seg.discharge
+          : 0;
+    const pct = clamp(carried || 100, 1, 100);
+    if (dir === "charge") {
+      seg.charge = pct;
+      seg.discharge = 0;
+    } else {
+      seg.discharge = pct;
+      seg.charge = 0;
+    }
+    seg.enabled = true;
     this._dirty = true;
     this._render();
   }
@@ -1041,7 +1123,7 @@ window.customCards.push({
 });
 
 console.info(
-  "%c GOODWE-TOU-PLANNER %c v0.3.1 ",
+  "%c GOODWE-TOU-PLANNER %c v0.3.2 ",
   "background:#2e7d32;color:#fff;font-weight:bold",
   "background:#333;color:#fff"
 );

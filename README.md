@@ -29,10 +29,12 @@ automate them from scripts, automations and dashboards.
 - A **bundled Lovelace card** (`custom:goodwe-tou-card`) that shows all four
   windows in one tile with red↔green sliders and a *Cheapest hours* button.
 - A **planner card** (`custom:goodwe-tou-planner-card`) with two views: a
-  *now → midnight tomorrow* timeline with draggable bars, and a *whole-week*
-  calendar list of the seven days. Each window has a separate charge and
-  discharge slider, an active/inactive button and day chips. Tomorrow is greyed
-  out until tomorrow's prices are known and overlapping windows are impossible.
+  *now → midnight tomorrow* timeline with draggable bars at the very top, and a
+  *whole-week* calendar list of the seven days. Each window has a single power
+  field that sits in a **Laden** column (left) or an **Ontladen** column (right);
+  clicking the empty cell moves it to the other column. Tomorrow stays greyed out
+  — with a warning triangle — until tomorrow's prices are known, and overlapping
+  windows are impossible.
 - A `goodwe_tou.set_windows` service that writes an explicit plan (start, stop,
   signed power, days) in a single verified request — used by the planner card.
 - A `goodwe_tou.calculate_cheapest_hours` service that returns the cheapest-hours
@@ -136,21 +138,24 @@ A ready-to-paste dashboard is in
 
 **Two views.** The buttons at the top switch between:
 
-- **Vandaag + morgen** (default) — a timeline from the current quarter hour to
-  midnight at the end of tomorrow. Each window that runs today and/or tomorrow is
-  drawn as a draggable bar; drag the **left** and **right** handles to move a
-  window's start and stop. Bars snap to quarter hours and **cannot overlap** — a
-  handle stops at the neighbouring window. **Tomorrow is greyed out** until the
-  configured price entity exposes prices for tomorrow (usually around 15:00).
+- **Vandaag + morgen** (default) — a timeline at the top of the card, from the
+  current quarter hour to midnight at the end of tomorrow. Each window that runs
+  today and/or tomorrow is drawn as a draggable bar; drag the **left** and
+  **right** handles to move a window's start and stop. Bars snap to quarter hours
+  and **cannot overlap** — a handle stops at the neighbouring window. **Tomorrow
+  is greyed out** until the configured price entity exposes prices for tomorrow
+  (usually around 15:00): the bar stays visible but grey, and a **⚠ warning
+  triangle** marks the unknown part.
 - **Hele week (7 dagen)** — a calendar list of the seven days, each showing the
   windows that run on that day.
 
 **Every window** has its own row with:
 
 - an **Actief / Inactief** button — an inactive window is greyed out;
-- a **charge slider** and a **discharge slider** (0–100 %), with the percentage
-  shown next to each. The two are **mutually exclusive**: the inverter stores a
-  single signed power per window, so setting one clears the other;
+- one **power field** (0–100 %), shown in the column that matches the window's
+  direction: **Laden** on the left, **Ontladen** on the right. The empty cell in
+  the other column is clickable — clicking it moves the field there. The inverter
+  stores a single signed power per window, so a window has only one direction;
 - a **start** and a **stop** time (a window never crosses midnight);
 - **day chips** (ma…zo).
 
