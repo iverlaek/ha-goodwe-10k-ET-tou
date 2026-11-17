@@ -29,7 +29,11 @@
           "soc_entity": "Battery state of charge entity",
           "pv_entity": "Remaining PV forecast entity",
           "capacity_kwh": "Battery capacity (kWh)",
-          "power_kw": "Charge/discharge power (kW)",
+          "power_kw": "Charge/discharge power (kW, legacy)",
+          "charge_kw": "Max charge power (kW)",
+          "discharge_kw": "Max discharge power (kW)",
+          "standby_kw": "House standby consumption (kW)",
+          "export_hours": "Max export duration at full power (hours)",
           "target_soc": "Target state of charge (%)",
           "min_soc": "Minimum state of charge (%)",
           "pv_factor": "PV credit factor (0-1)"
@@ -40,11 +44,11 @@
   "services": {
     "set_cheapest_hours": {
       "name": "Set cheapest hours",
-      "description": "Plan the four Time-of-Use windows from the price forecast: charge in the cheapest hours and discharge in the most expensive ones."
+      "description": "Plan the four Time-of-Use windows from the price forecast: charge fully in the cheapest hours and discharge in the most expensive ones (capped so the battery is not drained too early)."
     },
     "calculate_cheapest_hours": {
       "name": "Calculate cheapest hours",
-      "description": "Work out the cheapest charging and most expensive discharging hours from the price forecast and return them as a plan, without writing to the inverter."
+      "description": "Work out the cheapest charging and most expensive discharging hours from the price forecast and return the plan with the reasoning behind every window, without writing to the inverter."
     },
     "set_windows": {
       "name": "Set windows",

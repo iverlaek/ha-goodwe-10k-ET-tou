@@ -6,6 +6,20 @@ list of quarter-hourly prices plus the current battery state into a set of
 windows that charge in the cheapest slots and discharge in the most expensive
 ones.
 
+The strategy is cost-aware:
+
+* **Charge to the target (usually full), PV as a discount.** The battery is
+  charged up to the target state of charge in the cheapest quarter hours. The
+  forecast PV is treated as a discount on the energy the house would otherwise
+  buy, so it is a reason to charge cheaply at night rather than a reason to
+  charge less.
+* **Discharge on the most expensive hours**, but only down to a floor and only
+  up to an export cap, so the battery is never emptied so early that the house
+  has to buy expensive power later. The house's standby consumption is taken
+  into account so the plan is honest about what the battery really delivers.
+* Every choice is explained in a human readable reason, which the planner card
+  shows next to the plan.
+
 Everything here is pure (no Home Assistant imports) so it is easy to test.
 """
 
@@ -14,12 +28,16 @@ from __future__ import annotations
 import datetime as dt
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .const import (
     DEFAULT_CAPACITY_KWH,
+    DEFAULT_CHARGE_KW,
+    DEFAULT_DISCHARGE_KW,
+    DEFAULT_EXPORT_HOURS,
     DEFAULT_MIN_SOC,
     DEFAULT_POWER_KW,
+    DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
     SLOT_MINUTES,
     WINDOWS,
@@ -33,6 +51,40 @@ class PriceSlot:
 
     time: dt.datetime
     price: float
+
+
+@dataclass(frozen=True)
+class PlanReason:
+    """Why one planned window was filled in the way it was.
+
+    ``window`` is the 1-based window number in the plan (0 for a general note),
+    ``mode`` is ``charge``/``discharge``/``off`` and ``text`` is the explanation
+    the planner card shows.
+    """
+
+    window: int
+    mode: str
+    text: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {"window": self.window, "mode": self.mode, "text": self.text}
+
+
+@dataclass
+class Plan:
+    """A planned set of windows plus the reasoning behind it."""
+
+    windows: list[TouWindow] = field(default_factory=list)
+    reasons: list[PlanReason] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def summary(self) -> str:
+        """A one-line summary suitable for the activity log."""
+        return " ".join(self.notes) if self.notes else "Geen vensters nodig."
+
+    def reason_texts(self) -> list[dict[str, object]]:
+        return [reason.as_dict() for reason in self.reasons]
 
 
 def slots_from_prices(prices: Iterable[Mapping[str, object]]) -> list[PriceSlot]:
@@ -160,6 +212,206 @@ def _select_indices(
     return [index for index, _ in ordered[:count]]
 
 
+def _run_stats(
+    run: tuple[int, int],
+    slots: Sequence[PriceSlot],
+    slot_minutes: int,
+    power_kw: float,
+) -> dict[str, float]:
+    """Average price, duration and energy for one run of slot indices."""
+    count = run[1] - run[0] + 1
+    prices = [slots[index].price for index in range(run[0], run[1] + 1)]
+    return {
+        "count": float(count),
+        "minutes": float(count * slot_minutes),
+        "hours": count * slot_minutes / 60.0,
+        "avg_price": sum(prices) / len(prices) if prices else 0.0,
+        "min_price": min(prices) if prices else 0.0,
+        "max_price": max(prices) if prices else 0.0,
+        "energy_kwh": count * max(0.0, float(power_kw)) * slot_minutes / 60.0,
+    }
+
+
+def build_plan(
+    prices: Sequence[PriceSlot],
+    now: dt.datetime,
+    *,
+    soc: float,
+    capacity_kwh: float = DEFAULT_CAPACITY_KWH,
+    charge_power_kw: float = DEFAULT_CHARGE_KW,
+    discharge_power_kw: float = DEFAULT_DISCHARGE_KW,
+    target_soc: float = DEFAULT_TARGET_SOC,
+    min_soc: float = DEFAULT_MIN_SOC,
+    pv_credit_kwh: float = 0.0,
+    standby_kw: float = DEFAULT_STANDBY_KW,
+    export_hours: float | None = DEFAULT_EXPORT_HOURS,
+    max_windows: int = len(WINDOWS),
+    charge_windows: int = 2,
+    discharge_windows: int = 2,
+    slot_minutes: int = SLOT_MINUTES,
+    power_percent: int = 100,
+) -> Plan:
+    """Plan Time-of-Use windows from prices and the battery state, with reasons.
+
+    ``prices`` is the full list of quarter-hourly slots (today and, when
+    available, tomorrow). Only slots at or after ``now`` are considered.
+
+    ``pv_credit_kwh`` is the forecast PV that will be produced; it is reported as
+    a discount on the energy the house would otherwise buy, so it explains why
+    charging cheaply now is worth it. ``standby_kw`` is the house load the battery
+    has to cover in ECO mode; it is only used to explain the plan (the inverter's
+    own ECO self-consumption handles it). ``export_hours`` caps the energy that
+    may be exported at full discharge power so a bad solar period cannot drain the
+    battery too early; pass ``None`` to disable the cap.
+
+    The result is sorted by start time, never exceeds ``max_windows`` and carries
+    one :class:`PlanReason` per window plus general ``notes``.
+    """
+    if not prices:
+        return Plan(notes=["Geen prijzen beschikbaar."])
+
+    future = [slot for slot in prices if slot.time >= now]
+    if not future:
+        return Plan(notes=["Geen toekomstige prijzen beschikbaar."])
+
+    slot_hours = slot_minutes / 60.0
+    charge_power_kw = max(0.0, float(charge_power_kw))
+    discharge_power_kw = max(0.0, float(discharge_power_kw))
+    charge_per_slot = max(0.1, charge_power_kw * slot_hours)
+    discharge_per_slot = max(0.1, discharge_power_kw * slot_hours)
+
+    capacity_kwh = max(0.0, float(capacity_kwh))
+    target_soc = min(100.0, max(0.0, float(target_soc)))
+    min_soc = min(target_soc, max(0.0, float(min_soc)))
+    soc = min(100.0, max(0.0, float(soc)))
+    pv_credit_kwh = max(0.0, float(pv_credit_kwh))
+
+    needed_kwh = (target_soc - soc) / 100.0 * capacity_kwh
+    # Charge to the target (usually full): the forecast PV is a *discount* on the
+    # energy the house would otherwise buy, not a reason to charge less. The
+    # battery's energy is needed in the evening, when the sun is gone.
+    charge_energy = needed_kwh
+    available_kwh = max(0.0, (soc - min_soc) / 100.0 * capacity_kwh)
+    export_cap_kwh: float | None = None
+    if export_hours is not None and float(export_hours) > 0:
+        export_cap_kwh = discharge_power_kw * float(export_hours)
+    discharge_energy = (
+        available_kwh
+        if export_cap_kwh is None
+        else min(available_kwh, export_cap_kwh)
+    )
+
+    n_charge = (
+        min(len(future), math.ceil(charge_energy / charge_per_slot))
+        if charge_energy > 0
+        else 0
+    )
+    n_discharge = (
+        min(len(future), math.ceil(discharge_energy / discharge_per_slot))
+        if discharge_energy > 0
+        else 0
+    )
+
+    budget = max(1, int(max_windows))
+    charge_windows = max(0, min(int(charge_windows), budget))
+    discharge_windows = max(0, min(int(discharge_windows), budget))
+
+    indexed = list(enumerate(future))
+
+    charge_idx = _select_indices(indexed, n_charge, cheapest=True)
+    charge_runs = _merge_runs(_group_runs(charge_idx), charge_windows) if charge_windows else []
+
+    used = set(charge_idx)
+    remaining = [(index, slot) for index, slot in indexed if index not in used]
+    discharge_idx = _select_indices(remaining, n_discharge, cheapest=False)
+    discharge_runs = (
+        _merge_runs(_group_runs(discharge_idx), discharge_windows)
+        if discharge_windows
+        else []
+    )
+
+    # -- reasoning ---------------------------------------------------------
+    notes: list[str] = []
+    if needed_kwh > 0:
+        notes.append(
+            f"Batterij {soc:.0f}% \u2192 doel {target_soc:.0f}% = {needed_kwh:.1f} kWh."
+        )
+    else:
+        notes.append(f"Batterij staat al op het doel ({soc:.0f}%).")
+    if pv_credit_kwh > 0:
+        notes.append(
+            f"PV-prognose levert nog {pv_credit_kwh:.1f} kWh voor niets. Dat verlaagt "
+            "je inkoop overdag, dus laden we de batterij 's nachts goedkoop vol in "
+            "plaats van later duur in te kopen."
+        )
+    if export_cap_kwh is not None and available_kwh > export_cap_kwh:
+        notes.append(
+            f"Ontladen is beperkt tot {export_cap_kwh:.1f} kWh (max "
+            f"{float(export_hours):.1f} uur terugleveren op vol vermogen) zodat de "
+            f"batterij niet te vroeg leegloopt; er is {available_kwh:.1f} kWh "
+            f"beschikbaar boven {min_soc:.0f}%."
+        )
+    elif available_kwh > 0:
+        notes.append(
+            f"Er is {available_kwh:.1f} kWh beschikbaar om te ontladen boven "
+            f"{min_soc:.0f}%."
+        )
+    if standby_kw and float(standby_kw) > 0:
+        notes.append(
+            f"Het huis gebruikt ongeveer {float(standby_kw):.1f} kW standby; dat "
+            "neemt de batterij in ECO-modus zelf voor haar rekening."
+        )
+
+    planned: list[tuple[str, tuple[int, int], float]] = []
+    for run in charge_runs:
+        planned.append(("charge", run, charge_power_kw))
+    for run in discharge_runs:
+        planned.append(("discharge", run, discharge_power_kw))
+    planned.sort(key=lambda item: item[1][0])
+
+    windows: list[TouWindow] = []
+    reasons: list[PlanReason] = []
+    for mode, run, power_kw in planned:
+        stats = _run_stats(run, future, slot_minutes, power_kw)
+        for window in _run_to_windows(run, future, slot_minutes, mode, power_percent):
+            windows.append(window)
+        number = len(windows)
+        if mode == "charge":
+            reasons.append(
+                PlanReason(
+                    window=number,
+                    mode=mode,
+                    text=(
+                        f"Goedkoopste {stats['minutes']:.0f} min van de komende periode "
+                        f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
+                        f"{power_kw:.0f} kW laad je hier {stats['energy_kwh']:.1f} kWh "
+                        "in de batterij."
+                    ),
+                )
+            )
+        else:
+            revenue = stats["energy_kwh"] * stats["avg_price"]
+            reasons.append(
+                PlanReason(
+                    window=number,
+                    mode=mode,
+                    text=(
+                        f"Duurste {stats['minutes']:.0f} min van de komende periode "
+                        f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
+                        f"{power_kw:.0f} kW ontlaad je hier {stats['energy_kwh']:.1f} kWh; "
+                        f"dat levert ongeveer \u20ac{revenue:.2f} op."
+                    ),
+                )
+            )
+
+    if not windows:
+        notes.append("Geen vensters nodig: de batterij is op doel en er valt niets te ontladen.")
+
+    windows = windows[:budget]
+    reasons = [reason for reason in reasons if reason.window <= budget]
+    return Plan(windows=windows, reasons=reasons, notes=notes)
+
+
 def plan_windows(
     prices: Sequence[PriceSlot],
     now: dt.datetime,
@@ -176,64 +428,65 @@ def plan_windows(
     slot_minutes: int = SLOT_MINUTES,
     power_percent: int = 100,
 ) -> list[TouWindow]:
-    """Plan Time-of-Use windows from prices and the current battery state.
+    """Backwards-compatible wrapper around :func:`build_plan`.
 
-    ``prices`` is the full list of quarter-hourly slots (today and, when
-    available, tomorrow). Only slots at or after ``now`` are considered.
-
-    ``pv_credit_kwh`` is the energy the forecast expects the battery to receive
-    for free; it is subtracted from the amount that has to be bought from the
-    grid. The result is sorted by start time and never exceeds ``max_windows``.
+    Uses one combined power for charging and discharging and no export cap, so
+    the historical behaviour (and its tests) is unchanged.
     """
-    if not prices:
-        return []
-
-    future = [slot for slot in prices if slot.time >= now]
-    if not future:
-        return []
-
-    slot_hours = slot_minutes / 60.0
-    per_slot_kwh = max(0.1, float(power_kw) * slot_hours)
-
-    capacity_kwh = max(0.0, float(capacity_kwh))
-    target_soc = min(100.0, max(0.0, float(target_soc)))
-    min_soc = min(target_soc, max(0.0, float(min_soc)))
-    soc = min(100.0, max(0.0, float(soc)))
-
-    charge_energy = max(
-        0.0, (target_soc - soc) / 100.0 * capacity_kwh - max(0.0, float(pv_credit_kwh))
+    plan = build_plan(
+        prices,
+        now,
+        soc=soc,
+        capacity_kwh=capacity_kwh,
+        charge_power_kw=power_kw,
+        discharge_power_kw=power_kw,
+        target_soc=target_soc,
+        min_soc=min_soc,
+        pv_credit_kwh=pv_credit_kwh,
+        standby_kw=0.0,
+        export_hours=None,
+        max_windows=max_windows,
+        charge_windows=charge_windows,
+        discharge_windows=discharge_windows,
+        slot_minutes=slot_minutes,
+        power_percent=power_percent,
     )
-    discharge_energy = max(0.0, (target_soc - min_soc) / 100.0 * capacity_kwh)
+    return plan.windows
 
-    n_charge = min(len(future), math.ceil(charge_energy / per_slot_kwh))
-    n_discharge = min(len(future), math.ceil(discharge_energy / per_slot_kwh))
 
-    budget = max(1, int(max_windows))
-    charge_windows = max(0, min(int(charge_windows), budget))
-    discharge_windows = max(0, min(int(discharge_windows), budget))
+def windows_cost(
+    windows: Sequence[TouWindow],
+    prices: Sequence[PriceSlot],
+    now: dt.datetime,
+    *,
+    charge_power_kw: float = DEFAULT_CHARGE_KW,
+    discharge_power_kw: float = DEFAULT_DISCHARGE_KW,
+    slot_minutes: int = SLOT_MINUTES,
+) -> float:
+    """Net grid cost of a set of windows over the slots from ``now`` on.
 
-    indexed = list(enumerate(future))
-
-    charge_idx = _select_indices(indexed, n_charge, cheapest=True)
-    charge_runs = _merge_runs(_group_runs(charge_idx), charge_windows)
-
-    used = set(charge_idx)
-    remaining = [(index, slot) for index, slot in indexed if index not in used]
-    discharge_idx = _select_indices(remaining, n_discharge, cheapest=False)
-    discharge_runs = _merge_runs(_group_runs(discharge_idx), discharge_windows)
-
-    windows: list[TouWindow] = []
-    for run in charge_runs:
-        windows.extend(
-            _run_to_windows(run, future, slot_minutes, "charge", power_percent)
-        )
-    for run in discharge_runs:
-        windows.extend(
-            _run_to_windows(run, future, slot_minutes, "discharge", power_percent)
-        )
-
-    windows.sort(key=lambda window: window.start)
-    return windows[:budget]
+    Charging costs money (positive), discharging earns it (negative). Used to
+    decide whether a re-planned schedule is actually cheaper than the one that is
+    on the inverter right now.
+    """
+    slot_hours = slot_minutes / 60.0
+    total = 0.0
+    for slot in prices:
+        if slot.time < now:
+            continue
+        moment = slot.time.time()
+        weekday_bit = 1 << slot.time.weekday()
+        for window in windows:
+            if not window.enabled or not (window.mask & weekday_bit):
+                continue
+            if not (window.start <= moment < window.stop):
+                continue
+            if window.mode == "charge":
+                total += slot.price * max(0.0, float(charge_power_kw)) * slot_hours
+            elif window.mode == "discharge":
+                total -= slot.price * max(0.0, float(discharge_power_kw)) * slot_hours
+            break
+    return total
 
 
 def forecast_soc(
@@ -244,6 +497,9 @@ def forecast_soc(
     soc: float,
     capacity_kwh: float = DEFAULT_CAPACITY_KWH,
     power_kw: float = DEFAULT_POWER_KW,
+    charge_power_kw: float | None = None,
+    discharge_power_kw: float | None = None,
+    base_load_kw: float = 0.0,
     step_minutes: int = SLOT_MINUTES,
     min_soc: float = 0.0,
     max_soc: float = 100.0,
@@ -253,7 +509,9 @@ def forecast_soc(
     Walks from ``start`` to ``end`` in ``step_minutes`` steps. For every step the
     energy each active window moves is added: a charge window raises the state of
     charge, a discharge window lowers it (the power percentage is a fraction of
-    ``power_kw``). The result is clamped to ``[min_soc, max_soc]``. Returns
+    the matching power). ``base_load_kw`` is the house's standby consumption,
+    which the battery also covers, so it lowers the state of charge in every
+    step. The result is clamped to ``[min_soc, max_soc]``. Returns
     ``(moment, soc)`` pairs, including the value at ``start``.
 
     Pure (no Home Assistant imports), so the card's forecast is easy to test.
@@ -261,6 +519,11 @@ def forecast_soc(
     """
     capacity_kwh = max(0.1, float(capacity_kwh))
     power_kw = max(0.0, float(power_kw))
+    charge_kw = power_kw if charge_power_kw is None else max(0.0, float(charge_power_kw))
+    discharge_kw = (
+        power_kw if discharge_power_kw is None else max(0.0, float(discharge_power_kw))
+    )
+    base_load_kw = max(0.0, float(base_load_kw))
     step = dt.timedelta(minutes=max(1, int(step_minutes)))
 
     current = min(max_soc, max(min_soc, float(soc)))
@@ -269,7 +532,8 @@ def forecast_soc(
     moment = start
     while moment < end:
         boundary = min(moment + step, end)
-        delta = 0.0
+        hours = (boundary - moment).total_seconds() / 3600.0
+        delta = -base_load_kw * hours / capacity_kwh * 100.0
         day = moment.replace(hour=0, minute=0, second=0, microsecond=0)
         weekday_bit = 1 << day.weekday()
         for window in windows:
@@ -281,8 +545,13 @@ def forecast_soc(
             overlap_stop = min(boundary, w_stop)
             if overlap_stop <= overlap_start:
                 continue
-            hours = (overlap_stop - overlap_start).total_seconds() / 3600.0
-            energy_kwh = -window.signed_power / 100.0 * power_kw * hours
+            overlap_hours = (overlap_stop - overlap_start).total_seconds() / 3600.0
+            if window.mode == "charge":
+                energy_kwh = window.power / 100.0 * charge_kw * overlap_hours
+            elif window.mode == "discharge":
+                energy_kwh = -window.power / 100.0 * discharge_kw * overlap_hours
+            else:
+                energy_kwh = 0.0
             delta += energy_kwh / capacity_kwh * 100.0
         current = min(max_soc, max(min_soc, current + delta))
         moment = boundary

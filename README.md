@@ -23,9 +23,16 @@ automate them from scripts, automations and dashboards.
   inverter, with a read-back verification and automatic retries (the dongle is
   flaky).
 - A **Set cheapest hours** button and a `goodwe_tou.set_cheapest_hours` service
-  that plan the four windows from an electricity price forecast: charge in the
-  cheapest hours and discharge in the most expensive ones, taking the current
-  state of charge and the PV forecast into account.
+  that plan the four windows from an electricity price forecast. The battery is
+  charged up to the target state of charge in the cheapest hours; the forecast PV
+  is a **discount** on the energy the house would otherwise buy (which is why
+  charging cheaply now is worth it), not a reduction of the charge. Discharging
+  happens in the most expensive hours, capped so the battery is never drained so
+  early that the house has to buy expensive power later.
+- An **automatic quarter-hour re-check** (`switch.goodwe_time_of_use_auto_herberekening`,
+  on by default): every 15 minutes the plan is recomputed and, when it is no
+  longer on the minimum-cost line, the new plan is written and the **reason** is
+  logged.
 - A **bundled card** (`custom:goodwe-tou-card`) — a **read-only** overview: a
   calendar of the current week (ma…zo) with the windows that run on each day, and
   below it a **battery state-of-charge graph** that shows the measured SoC for the
@@ -38,11 +45,14 @@ automate them from scripts, automations and dashboards.
   clicking the empty cell moves it to the other column. Inactive windows collapse
   to one thin grey line so the active ones stand together. Tomorrow stays greyed
   out — with a warning triangle — until tomorrow's prices are known, and
-  overlapping windows are impossible.
+  overlapping windows are impossible. *Optimale prijzen berekenen* also shows a
+  **"Waarom deze tijden"** section: the reason behind every charge and discharge
+  window.
 - A `goodwe_tou.set_windows` service that writes an explicit plan (start, stop,
   signed power, days) in a single verified request — used by the planner card.
 - A `goodwe_tou.calculate_cheapest_hours` service that returns the cheapest-hours
-  plan **without writing** it, so a dashboard can show the plan before applying.
+  plan — with the reasoning behind every window — **without writing** it, so a
+  dashboard can show the plan before applying.
 - A `goodwe_tou.forecast_soc` service that projects the battery state of charge
   from now until the end of tomorrow, following the windows that are on the
   inverter right now — used by the bundled card's graph.
@@ -99,6 +109,7 @@ With the default device name the entities are:
 | `number.goodwe_time_of_use_window_1_power` … `_4_power` | Signed power % (`-100` charge … `+100` discharge, `0` off) |
 | `text.goodwe_time_of_use_window_1_days` … `_4_days` | Active days |
 | `switch.goodwe_time_of_use_eco_mode` | ECO work mode on/off |
+| `switch.goodwe_time_of_use_auto_herberekening` | Automatic quarter-hour re-check on/off |
 | `button.goodwe_time_of_use_read_from_inverter` | Read the schedule from the inverter |
 | `button.goodwe_time_of_use_apply_to_inverter` | Apply the schedule to the inverter (verified) |
 | `button.goodwe_time_of_use_set_cheapest_hours` | Plan + apply the cheapest hours |
@@ -194,7 +205,9 @@ The number of windows in use is chosen with the **Aantal vensters** selector
 - **Lezen van omvormer** pulls the live schedule from the inverter;
 - **Optimale prijzen berekenen** calls `goodwe_tou.calculate_cheapest_hours`,
   fills the rows with the plan and does **not** write anything — review it, then
-  press *Toepassen*;
+  press *Toepassen*. Below the buttons it shows **"Waarom deze tijden"**: the
+  reason behind every window (which slots were the cheapest or most expensive,
+  the average price, the energy involved) and the plan's notes;
 - **Toepassen** writes the whole plan at once through `goodwe_tou.set_windows`.
 
 ```yaml
@@ -213,7 +226,8 @@ slot_minutes: 15                                     # optional, timeline granul
 the integration sent to the inverter, newest first. Each entry shows when it
 happened, what action it was, the fields that changed (old → new), the plan that
 was written and whether the inverter **confirmed** it — or, in red, why it did
-not (for example a read-back mismatch or a timeout).
+not (for example a read-back mismatch or a timeout). An automatic re-check
+(`auto_replan`) also shows **why** the plan was changed.
 
 Filters at the top narrow the list by **result** (Alles / Gelukt / Mislukt) and
 by **window** (Alle / 1–4). The card fetches the full log through the
@@ -233,9 +247,14 @@ limit: 200                                        # optional, entries fetched
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
 service) reads the quarter-hourly price forecast from a price entity, works out
 how much energy the battery still needs (from the state of charge, the battery
-capacity, the charge power and the remaining PV forecast) and fills the four
-windows with the cheapest charging hours and the most expensive discharging
-hours.
+capacity and the target state of charge) and fills the four windows with the
+cheapest charging hours and the most expensive discharging hours.
+
+The house's standby consumption and the GoodWe's power limits are taken into
+account: the battery charges at up to `charge_kw` (6 kW, AC + DC together) and
+discharges at up to `discharge_kw` (7 kW). Discharging is capped at
+`export_hours` at full power, so a bad solar period cannot drain the battery so
+early that the house has to buy expensive power at the peak.
 
 The defaults can be changed in the integration **Configure** dialog or passed to
 the service:
@@ -247,7 +266,10 @@ data:
   soc_entity: sensor.battery_state_of_charge
   pv_entity: sensor.energy_production_today_remaining
   capacity_kwh: 24
-  power_kw: 7
+  charge_kw: 6
+  discharge_kw: 7
+  standby_kw: 1.2
+  export_hours: 1
   target_soc: 100
   min_soc: 20
   pv_factor: 0.5
@@ -259,10 +281,23 @@ data:
 | `soc_entity` | `sensor.battery_state_of_charge` | Battery state of charge (%) |
 | `pv_entity` | `sensor.energy_production_today_remaining` | Remaining PV production today (kWh) |
 | `capacity_kwh` | `24` | Usable battery capacity |
-| `power_kw` | `7` | Charge / discharge power |
+| `charge_kw` | `6` | Maximum charge power (GoodWe limit, AC + DC) |
+| `discharge_kw` | `7` | Maximum discharge power |
+| `standby_kw` | `1.2` | House standby consumption the battery covers in ECO mode |
+| `export_hours` | `1` | How long the battery may export at full power before it is kept for the house; `0` disables the cap |
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
-| `pv_factor` | `0.5` | Fraction of the PV forecast credited against grid charging |
+| `pv_factor` | `0.5` | Fraction of the PV forecast counted as a discount on the energy the house would buy |
+| `power_kw` | `7` | Legacy combined charge/discharge power, used when `charge_kw`/`discharge_kw` are not set |
+
+### Automatic quarter-hour re-check
+
+Every quarter hour the integration recomputes the plan and compares it with the
+windows that are on the inverter. When they differ — because the prices, the
+state of charge or the PV forecast changed — the new plan is written and the
+**reason** is added to the activity log (action `auto_replan`). Turn the
+`switch.goodwe_time_of_use_auto_herberekening` switch off to keep the plan that
+is on the inverter as it is.
 
 ### Calculating without applying
 
@@ -277,8 +312,9 @@ data:
 response_variable: plan
 ```
 
-The response is a list of windows, each with `start`, `stop`, `power` (signed),
-`days`, `mode` and `enabled`:
+The response is the plan: a `windows` list, a `reasons` list (one entry per
+window with `window`, `mode` and a human readable `text`), a one-line `summary`
+and general `notes` (for example about the PV discount and the export cap):
 
 ```yaml
 windows:
@@ -288,20 +324,31 @@ windows:
     days: "mon,tue,wed,thu,fri,sat,sun"
     mode: charge
     enabled: true
+reasons:
+  - window: 1
+    mode: charge
+    text: "Goedkoopste 180 min van de komende periode (gemiddeld €0.081/kWh)…"
+summary: "Batterij 40% → doel 100% = 14.4 kWh. …"
+notes:
+  - "PV-prognose levert nog 5.0 kWh voor niets. …"
 ```
 
 ## Forecasting the state of charge
 
 `goodwe_tou.forecast_soc` projects the battery state of charge from now until the
 end of tomorrow, following the Time-of-Use windows that are currently on the
-inverter. It is what the bundled card draws after the measured part of its graph:
+inverter. The house's standby consumption is drawn from the battery too, so the
+forecast shows the real drain. It is what the bundled card draws after the
+measured part of its graph:
 
 ```yaml
 action: goodwe_tou.forecast_soc
 data:
   soc_entity: sensor.battery_state_of_charge   # optional
   capacity_kwh: 24                             # optional
-  power_kw: 7                                  # optional
+  charge_kw: 6                                 # optional; max charge power
+  discharge_kw: 7                              # optional; max discharge power
+  standby_kw: 1.2                              # optional; house standby load
   min_soc: 20                                  # optional; discharge floor
 response_variable: forecast
 ```

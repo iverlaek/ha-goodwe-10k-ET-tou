@@ -2,8 +2,9 @@ set_cheapest_hours:
   name: Set cheapest hours
   description: >-
     Plan the four Time-of-Use windows from the electricity price forecast:
-    charge during the cheapest hours and discharge during the most expensive
-    ones, then write the result to the inverter.
+    charge the battery up to the target state of charge in the cheapest hours
+    and discharge in the most expensive ones, then write the result to the
+    inverter. Discharging is capped so the battery is not drained too early.
   fields:
     price_entity:
       name: Price entity
@@ -25,7 +26,8 @@ set_cheapest_hours:
       name: PV forecast entity
       description: >-
         Entity reporting the remaining photovoltaic production for today in
-        kWh. Used to avoid buying energy the sun will provide for free.
+        kWh. Counted as a discount on the energy the house would otherwise buy,
+        which is why charging cheaply now is worth it.
       required: false
       selector:
         entity:
@@ -41,8 +43,10 @@ set_cheapest_hours:
           step: 0.5
           unit_of_measurement: kWh
     power_kw:
-      name: Charge/discharge power (kW)
-      description: Maximum charge and discharge power in kW.
+      name: Charge/discharge power (kW, legacy)
+      description: >-
+        Combined charge and discharge power. Used when the separate charge_kw /
+        discharge_kw are not set.
       required: false
       selector:
         number:
@@ -50,6 +54,50 @@ set_cheapest_hours:
           max: 100
           step: 0.1
           unit_of_measurement: kW
+    charge_kw:
+      name: Max charge power (kW)
+      description: Maximum power the battery may be charged with (AC + DC).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    discharge_kw:
+      name: Max discharge power (kW)
+      description: Maximum power the battery may be discharged with.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    standby_kw:
+      name: House standby consumption (kW)
+      description: >-
+        Continuous house load the battery covers in ECO mode. Used for the SoC
+        forecast and to explain the plan.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    export_hours:
+      name: Max export duration (hours)
+      description: >-
+        How long the battery may export to the grid at full discharge power
+        before it must be kept for the house. 0 disables the cap.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 24
+          step: 0.25
+          unit_of_measurement: h
     target_soc:
       name: Target state of charge (%)
       description: State of charge to charge up to and discharge down from.
@@ -73,8 +121,8 @@ set_cheapest_hours:
     pv_factor:
       name: PV credit factor
       description: >-
-        Fraction (0-1) of the remaining PV forecast that is credited against
-        the energy that has to be bought from the grid.
+        Fraction (0-1) of the remaining PV forecast that counts as a discount
+        on the energy the house would otherwise buy.
       required: false
       selector:
         number:
@@ -86,9 +134,9 @@ calculate_cheapest_hours:
   name: Calculate cheapest hours
   description: >-
     Work out the cheapest charging and most expensive discharging hours from the
-    price forecast and return them as a plan, without writing anything to the
-    inverter. The planner card uses this to fill its windows so you can review
-    and adjust the plan before applying it.
+    price forecast and return the plan with the reasoning behind every window,
+    without writing anything to the inverter. The planner card uses this to fill
+    its windows so you can review and adjust the plan before applying it.
   fields:
     price_entity:
       name: Price entity
@@ -110,7 +158,8 @@ calculate_cheapest_hours:
       name: PV forecast entity
       description: >-
         Entity reporting the remaining photovoltaic production for today in
-        kWh. Used to avoid buying energy the sun will provide for free.
+        kWh. Counted as a discount on the energy the house would otherwise buy,
+        which is why charging cheaply now is worth it.
       required: false
       selector:
         entity:
@@ -126,8 +175,10 @@ calculate_cheapest_hours:
           step: 0.5
           unit_of_measurement: kWh
     power_kw:
-      name: Charge/discharge power (kW)
-      description: Maximum charge and discharge power in kW.
+      name: Charge/discharge power (kW, legacy)
+      description: >-
+        Combined charge and discharge power. Used when the separate charge_kw /
+        discharge_kw are not set.
       required: false
       selector:
         number:
@@ -135,6 +186,50 @@ calculate_cheapest_hours:
           max: 100
           step: 0.1
           unit_of_measurement: kW
+    charge_kw:
+      name: Max charge power (kW)
+      description: Maximum power the battery may be charged with (AC + DC).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    discharge_kw:
+      name: Max discharge power (kW)
+      description: Maximum power the battery may be discharged with.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    standby_kw:
+      name: House standby consumption (kW)
+      description: >-
+        Continuous house load the battery covers in ECO mode. Used for the SoC
+        forecast and to explain the plan.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    export_hours:
+      name: Max export duration (hours)
+      description: >-
+        How long the battery may export to the grid at full discharge power
+        before it must be kept for the house. 0 disables the cap.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 24
+          step: 0.25
+          unit_of_measurement: h
     target_soc:
       name: Target state of charge (%)
       description: State of charge to charge up to and discharge down from.
@@ -158,8 +253,8 @@ calculate_cheapest_hours:
     pv_factor:
       name: PV credit factor
       description: >-
-        Fraction (0-1) of the remaining PV forecast that is credited against
-        the energy that has to be bought from the grid.
+        Fraction (0-1) of the remaining PV forecast that counts as a discount
+        on the energy the house would otherwise buy.
       required: false
       selector:
         number:
@@ -189,9 +284,10 @@ forecast_soc:
   name: Forecast state of charge
   description: >-
     Project the battery state of charge from now until the end of tomorrow,
-    following the Time-of-Use windows that are currently on the inverter. Used
-    by the week card to draw the forecast part of its graph. Returns a list of
-    {time, soc} points.
+    following the Time-of-Use windows that are currently on the inverter. The
+    house's standby consumption is drawn from the battery too, so the forecast
+    shows the real drain. Used by the week card to draw the forecast part of its
+    graph. Returns a list of {time, soc} points.
   fields:
     soc_entity:
       name: Battery state of charge entity
@@ -211,12 +307,46 @@ forecast_soc:
           step: 0.5
           unit_of_measurement: kWh
     power_kw:
-      name: Charge/discharge power (kW)
-      description: Maximum charge and discharge power in kW.
+      name: Charge/discharge power (kW, legacy)
+      description: >-
+        Combined charge and discharge power. Used when the separate charge_kw /
+        discharge_kw are not set.
       required: false
       selector:
         number:
           min: 0.1
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    charge_kw:
+      name: Max charge power (kW)
+      description: Maximum power the battery may be charged with (AC + DC).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    discharge_kw:
+      name: Max discharge power (kW)
+      description: Maximum power the battery may be discharged with.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    standby_kw:
+      name: House standby consumption (kW)
+      description: >-
+        Continuous house load the battery covers in ECO mode. Lowers the
+        forecast state of charge in every step.
+      required: false
+      selector:
+        number:
+          min: 0
           max: 100
           step: 0.1
           unit_of_measurement: kW

@@ -15,7 +15,10 @@ from homeassistant.core import callback
 
 from .const import (
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_KW,
     CONF_COMM_ADDR,
+    CONF_DISCHARGE_KW,
+    CONF_EXPORT_HOURS,
     CONF_HOST,
     CONF_MIN_SOC,
     CONF_PORT,
@@ -25,9 +28,13 @@ from .const import (
     CONF_PV_FACTOR,
     CONF_SCAN_INTERVAL,
     CONF_SOC_ENTITY,
+    CONF_STANDBY_KW,
     CONF_TARGET_SOC,
     DEFAULT_CAPACITY_KWH,
+    DEFAULT_CHARGE_KW,
     DEFAULT_COMM_ADDR,
+    DEFAULT_DISCHARGE_KW,
+    DEFAULT_EXPORT_HOURS,
     DEFAULT_HOST,
     DEFAULT_MIN_SOC,
     DEFAULT_PORT,
@@ -37,6 +44,7 @@ from .const import (
     DEFAULT_PV_FACTOR,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SOC_ENTITY,
+    DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
     DEFAULT_TIMEOUT,
     DOMAIN,
@@ -139,6 +147,22 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_POWER_KW,
                     default=default(CONF_POWER_KW, DEFAULT_POWER_KW),
                 ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=100)),
+                vol.Optional(
+                    CONF_CHARGE_KW,
+                    default=default(CONF_CHARGE_KW, DEFAULT_CHARGE_KW),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Optional(
+                    CONF_DISCHARGE_KW,
+                    default=default(CONF_DISCHARGE_KW, DEFAULT_DISCHARGE_KW),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Optional(
+                    CONF_STANDBY_KW,
+                    default=default(CONF_STANDBY_KW, DEFAULT_STANDBY_KW),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Optional(
+                    CONF_EXPORT_HOURS,
+                    default=default(CONF_EXPORT_HOURS, DEFAULT_EXPORT_HOURS),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=24)),
                 vol.Optional(
                     CONF_TARGET_SOC,
                     default=default(CONF_TARGET_SOC, DEFAULT_TARGET_SOC),

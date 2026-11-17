@@ -13,11 +13,15 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_track_time_change
 
 from .activity import MAX_ENTRIES
 from .const import (
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_KW,
     CONF_COMM_ADDR,
+    CONF_DISCHARGE_KW,
+    CONF_EXPORT_HOURS,
     CONF_HOST,
     CONF_MIN_SOC,
     CONF_PORT,
@@ -26,6 +30,7 @@ from .const import (
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_SOC_ENTITY,
+    CONF_STANDBY_KW,
     CONF_TARGET_SOC,
     DEFAULT_COMM_ADDR,
     DEFAULT_PORT,
@@ -70,6 +75,18 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         vol.Optional(CONF_POWER_KW): vol.All(
             vol.Coerce(float), vol.Range(min=0.1, max=100)
         ),
+        vol.Optional(CONF_CHARGE_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_DISCHARGE_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_STANDBY_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_EXPORT_HOURS): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=24)
+        ),
         vol.Optional(CONF_TARGET_SOC): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
         ),
@@ -90,6 +107,15 @@ SERVICE_FORECAST_SOC_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_POWER_KW): vol.All(
             vol.Coerce(float), vol.Range(min=0.1, max=100)
+        ),
+        vol.Optional(CONF_CHARGE_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_DISCHARGE_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_STANDBY_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
         ),
         vol.Optional(CONF_MIN_SOC): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
@@ -182,6 +208,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_frontend(hass)
     _async_register_services(hass)
 
+    async def _auto_replan(_now: object) -> None:
+        """Quarter-hour re-check: keep the plan on the minimum-cost line."""
+        try:
+            await coordinator.async_auto_replan()
+        except Exception:  # pragma: no cover - never let the scheduler die
+            _LOGGER.warning("Automatic re-planning failed", exc_info=True)
+
+    entry.async_on_unload(
+        async_track_time_change(
+            hass, _auto_replan, minute=[0, 15, 30, 45], second=0
+        )
+    )
+
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
@@ -221,12 +260,17 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
         async def _handle_calculate_cheapest_hours(
             call: ServiceCall,
-        ) -> dict[str, list[dict]]:
+        ) -> dict[str, object]:
             coordinators = _coordinators(hass)
             if not coordinators:
                 raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
             plan = await coordinators[0].async_calculate_cheapest_hours(call.data)
-            return {"windows": [window_to_dict(window) for window in plan]}
+            return {
+                "windows": [window_to_dict(window) for window in plan.windows],
+                "reasons": plan.reason_texts(),
+                "summary": plan.summary,
+                "notes": list(plan.notes),
+            }
 
         hass.services.async_register(
             DOMAIN,

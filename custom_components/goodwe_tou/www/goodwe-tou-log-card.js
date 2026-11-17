@@ -20,7 +20,7 @@
  *   limit: 200                                # optional, entries fetched
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.6.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
@@ -28,6 +28,7 @@ const ACTION_LABELS = {
   apply: "Toegepast",
   set_windows: "Plan toegepast",
   cheapest_hours: "Optimale prijzen",
+  auto_replan: "Automatisch herberekend",
   window_time: "Tijd gewijzigd",
   window_power: "Vermogen gewijzigd",
   window_days: "Dagen gewijzigd",
@@ -132,6 +133,7 @@ const STYLES = `
   .wins { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
   .win { font-size: .78rem; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
   .win .wlabel { color: var(--primary-text-color); }
+  .reason { margin-top: 5px; font-size: .78rem; color: var(--primary-text-color); background: var(--secondary-background-color); border-radius: 6px; padding: 5px 8px; }
   .error-text { margin-top: 4px; font-size: .76rem; color: var(--error-color, #d32f2f); }
   .empty { font-size: .82rem; color: var(--secondary-text-color); padding: 10px 0; }
   .note { font-size: .74rem; color: var(--secondary-text-color); margin-top: 6px; }
@@ -360,6 +362,13 @@ class GoodweTouLogCard extends HTMLElement {
     head.appendChild(badge);
 
     row.appendChild(head);
+
+    if (entry.reason) {
+      const reason = document.createElement("div");
+      reason.className = "reason";
+      reason.textContent = entry.reason;
+      row.appendChild(reason);
+    }
 
     const changes = entry.changes || [];
     if (changes.length) {

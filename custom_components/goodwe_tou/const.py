@@ -27,18 +27,35 @@ CONF_SOC_ENTITY: Final = "soc_entity"
 CONF_PV_ENTITY: Final = "pv_entity"
 CONF_CAPACITY_KWH: Final = "capacity_kwh"
 CONF_POWER_KW: Final = "power_kw"
+CONF_CHARGE_KW: Final = "charge_kw"
+CONF_DISCHARGE_KW: Final = "discharge_kw"
+CONF_STANDBY_KW: Final = "standby_kw"
+CONF_EXPORT_HOURS: Final = "export_hours"
 CONF_TARGET_SOC: Final = "target_soc"
 CONF_MIN_SOC: Final = "min_soc"
 CONF_PV_FACTOR: Final = "pv_factor"
+CONF_AUTO_REPLAN: Final = "auto_replan"
 
 DEFAULT_PRICE_ENTITY: Final = "sensor.average_electricity_price"
 DEFAULT_SOC_ENTITY: Final = "sensor.battery_state_of_charge"
 DEFAULT_PV_ENTITY: Final = "sensor.energy_production_today_remaining"
 DEFAULT_CAPACITY_KWH: Final = 24.0
+#: Legacy combined charge/discharge power, kept as the fallback for both.
 DEFAULT_POWER_KW: Final = 7.0
+#: The GoodWe can put at most ~6 kW into the battery (AC + DC together).
+DEFAULT_CHARGE_KW: Final = 6.0
+#: The GoodWe can take at most ~7 kW out of the battery.
+DEFAULT_DISCHARGE_KW: Final = 7.0
+#: Standby consumption of the house, drawn from the battery in ECO mode.
+DEFAULT_STANDBY_KW: Final = 1.2
+#: How long the battery may export to the grid at full power in a bad solar
+#: period before it must be kept for the house.
+DEFAULT_EXPORT_HOURS: Final = 1.0
 DEFAULT_TARGET_SOC: Final = 100
 DEFAULT_MIN_SOC: Final = 20
 DEFAULT_PV_FACTOR: Final = 0.5
+#: Re-check the plan every quarter hour and apply it automatically.
+DEFAULT_AUTO_REPLAN: Final = True
 
 # Price slots are 15 minutes in the ENTSO-e attribute.
 SLOT_MINUTES: Final = 15

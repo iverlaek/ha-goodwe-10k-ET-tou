@@ -26,6 +26,7 @@ ACTIONS = (
     "apply",
     "set_windows",
     "cheapest_hours",
+    "auto_replan",
     "window_time",
     "window_power",
     "window_days",
@@ -100,13 +101,15 @@ def make_entry(
     windows: Iterable[Mapping[str, Any]] | None = None,
     result: str = "ok",
     error: str | None = None,
+    reason: str | None = None,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Build one log entry.
 
     ``changes`` holds field-level differences (``field``/``old``/``new``);
     ``windows`` holds the full set of windows that was written, which is useful
-    when nothing changed (for example a manual *Apply*).
+    when nothing changed (for example a manual *Apply*). ``reason`` explains a
+    change the integration decided on itself (the quarter-hour re-check).
     """
     moment = now or dt.datetime.now(dt.UTC).astimezone()
     return {
@@ -114,6 +117,7 @@ def make_entry(
         "action": action,
         "result": "error" if result == "error" else "ok",
         "error": error,
+        "reason": reason,
         "changes": [dict(change) for change in (changes or [])],
         "windows": [dict(window) for window in (windows or [])],
     }

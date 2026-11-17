@@ -49,7 +49,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.6.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -67,6 +67,12 @@ const MIN = 60000;
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 const pad = (value) => String(value).padStart(2, "0");
+const escapeHtml = (value) =>
+  String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
 const startOfDay = (date) => {
   const copy = new Date(date);
@@ -233,6 +239,19 @@ const STYLES = `
   .actions button:active { transform: translateY(1px); }
   .error { color: var(--error-color, #d32f2f); font-size: .8rem; margin-top: 8px; min-height: 1em; }
 
+  .reasons { display: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider-color); }
+  .reasons.show { display: block; }
+  .reasons h4 { margin: 0 0 8px; font-size: .85rem; font-weight: 600; color: var(--primary-text-color); }
+  .reasons .note { font-size: .78rem; color: var(--secondary-text-color); margin-bottom: 8px; }
+  .reasons .note + .note { margin-top: -4px; }
+  .reasons ul { list-style: none; margin: 0; padding: 0; }
+  .reasons li { display: flex; gap: 8px; align-items: flex-start; font-size: .8rem; color: var(--primary-text-color); padding: 5px 0; }
+  .reasons li + li { border-top: 1px solid var(--divider-color); }
+  .reasons .pill { flex: none; font-size: .7rem; font-weight: 600; padding: 2px 7px; border-radius: 10px; color: var(--text-primary-color, #fff); background: var(--disabled-color, #9e9e9e); }
+  .reasons .pill.charge { background: var(--primary-color); }
+  .reasons .pill.discharge { background: var(--warning-color, #ff9800); }
+  .reasons .why { flex: 1 1 auto; }
+
   ha-card.view-week .axis,
   ha-card.view-week .prices,
   ha-card.view-week .row .track { display: none !important; }
@@ -255,6 +274,9 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._slot = 15;
     this._count = MAX_WINDOWS;
     this._view = "now";
+    this._reasons = [];
+    this._notes = [];
+    this._summary = "";
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerUp = this._onPointerUp.bind(this);
   }
@@ -350,6 +372,7 @@ class GoodweTouPlannerCard extends HTMLElement {
           <button id="calc">Optimale prijzen berekenen</button>
           <button id="apply" class="primary">Toepassen</button>
         </div>
+        <div class="reasons" id="reasons"></div>
         <div class="error" id="error"></div>
       </ha-card>
     `;
@@ -359,6 +382,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._pricesEl = root.querySelector("#prices");
     this._weekEl = root.querySelector("#week");
     this._hintEl = root.querySelector("#hint");
+    this._reasonsEl = root.querySelector("#reasons");
     this._errorEl = root.querySelector("#error");
 
     this._viewBtns = Array.from(root.querySelectorAll("#viewseg button"));
@@ -621,6 +645,36 @@ class GoodweTouPlannerCard extends HTMLElement {
     }
     for (let i = 0; i < this._rows.length; i++) this._renderRow(i);
     if (this._view === "week") this._renderWeek();
+    this._renderReasons();
+  }
+
+  _renderReasons() {
+    const el = this._reasonsEl;
+    if (!el) return;
+    if (!this._reasons.length && !this._notes.length) {
+      el.className = "reasons";
+      el.innerHTML = "";
+      return;
+    }
+    el.className = "reasons show";
+    const notes = this._notes
+      .map((note) => `<div class="note">${escapeHtml(note)}</div>`)
+      .join("");
+    const items = this._reasons
+      .map((reason) => {
+        const mode = reason.mode === "discharge" ? "discharge" : "charge";
+        const label =
+          reason.window > 0 ? `Venster ${reason.window}` : "Plan";
+        return `<li><span class="pill ${mode}">${label}</span><span class="why">${escapeHtml(
+          reason.text || ""
+        )}</span></li>`;
+      })
+      .join("");
+    el.innerHTML = `
+      <h4>Waarom deze tijden</h4>
+      ${notes}
+      ${items ? `<ul>${items}</ul>` : ""}
+    `;
   }
 
   _renderRow(i) {
@@ -1032,6 +1086,9 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._callServiceWithResponse("goodwe_tou", "calculate_cheapest_hours", {})
       .then((response) => {
         const windows = (response && response.windows) || [];
+        this._reasons = (response && response.reasons) || [];
+        this._notes = (response && response.notes) || [];
+        this._summary = (response && response.summary) || "";
         this._applyPlan(windows);
         this._dirty = true;
         this._render();

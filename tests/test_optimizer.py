@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from conftest import load
 
 optimizer = load("optimizer")
@@ -80,7 +82,12 @@ def test_plan_charges_cheap_and_discharges_expensive():
         assert window.start < window.stop
 
 
-def test_pv_credit_reduces_charging():
+def test_pv_credit_is_a_discount_not_a_reduction():
+    """PV is credited against the energy the house buys, not the charge target.
+
+    The battery must be full in the evening, when the sun is gone, so the plan
+    charges to the target either way; the PV forecast only shows up as a note.
+    """
     start = dt.datetime(2026, 11, 16, 0, 0)
     slots = _slots(start, 96)
     without = optimizer.plan_windows(
@@ -97,7 +104,12 @@ def test_pv_credit_reduces_charging():
             if w.mode == "charge"
         )
 
-    assert charge_minutes(with_pv) < charge_minutes(without)
+    assert charge_minutes(with_pv) == charge_minutes(without)
+
+    plan = optimizer.build_plan(
+        slots, start, soc=20, capacity_kwh=24, pv_credit_kwh=10, standby_kw=0
+    )
+    assert any("PV-prognose" in note for note in plan.notes)
 
 
 def test_full_battery_only_discharges():
@@ -181,3 +193,106 @@ def test_forecast_soc_clamps_to_min_soc():
         min_soc=20,
     )
     assert min(value for _, value in points) == 20
+
+
+def test_forecast_soc_base_load_drains_the_battery():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    points = optimizer.forecast_soc(
+        [],
+        day,
+        day + dt.timedelta(hours=2),
+        soc=100,
+        capacity_kwh=10,
+        base_load_kw=1.0,
+    )
+    values = dict(points)
+    # 1 kW for 2 hours on a 10 kWh battery = 20 percentage points.
+    assert values[day + dt.timedelta(hours=2)] == 80
+
+
+def test_build_plan_explains_every_window():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots(start, 96)
+    plan = optimizer.build_plan(
+        slots,
+        start,
+        soc=40,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=7,
+        target_soc=100,
+        min_soc=20,
+        export_hours=1.0,
+    )
+    assert plan.windows
+    # One reason per planned window, in the same order as the windows.
+    assert len(plan.reasons) == len(plan.windows)
+    for reason in plan.reasons:
+        assert reason.window >= 1
+        assert reason.mode in ("charge", "discharge")
+        assert reason.text
+    # Charging and discharging both carry a human readable explanation.
+    modes = {reason.mode for reason in plan.reasons}
+    assert "charge" in modes
+    assert "discharge" in modes
+    assert plan.summary
+
+
+def test_build_plan_export_cap_limits_discharge():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots(start, 96)
+    capped = optimizer.build_plan(
+        slots,
+        start,
+        soc=100,
+        capacity_kwh=24,
+        discharge_power_kw=7,
+        min_soc=20,
+        export_hours=1.0,
+    )
+    uncapped = optimizer.build_plan(
+        slots,
+        start,
+        soc=100,
+        capacity_kwh=24,
+        discharge_power_kw=7,
+        min_soc=20,
+        export_hours=None,
+    )
+
+    def discharge_minutes(plan):
+        return sum(
+            (w.stop.hour * 60 + w.stop.minute) - (w.start.hour * 60 + w.start.minute)
+            for w in plan.windows
+            if w.mode == "discharge"
+        )
+
+    assert discharge_minutes(capped) <= 60
+    assert discharge_minutes(capped) < discharge_minutes(uncapped)
+
+
+def test_windows_cost_counts_charge_and_discharge():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    slots = [
+        optimizer.PriceSlot(day + dt.timedelta(hours=1), 0.10),
+        optimizer.PriceSlot(day + dt.timedelta(hours=2), 0.30),
+    ]
+    windows = [
+        optimizer.TouWindow(
+            start=dt.time(1, 0), stop=dt.time(1, 15), mode="charge", power=100, days="mon"
+        ),
+        optimizer.TouWindow(
+            start=dt.time(2, 0),
+            stop=dt.time(2, 15),
+            mode="discharge",
+            power=100,
+            days="mon",
+        ),
+    ]
+    cost = optimizer.windows_cost(
+        windows, slots, day, charge_power_kw=6, discharge_power_kw=7
+    )
+    # Charging 6 kW * 0.25 h at 0.10 = +0.15; discharging 7 kW * 0.25 h at 0.30
+    # = -0.525; net = -0.375.
+    assert cost == pytest.approx(-0.375)
+

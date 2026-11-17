@@ -598,6 +598,158 @@ async def test_activity_log_loads_persisted_entries(
 
 
 @pytest.mark.asyncio
+async def test_calculate_cheapest_hours_returns_reasons(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The planner card gets a human readable reason for every window."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {"time": (base + dt.timedelta(minutes=15 * i)).isoformat(), "price": i / 100.0}
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "40")
+    hass.states.async_set("sensor.energy_production_today_remaining", "5")
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN,
+            "calculate_cheapest_hours",
+            {},
+            blocking=True,
+            return_response=True,
+        )
+        await hass.async_block_till_done()
+
+    assert response["windows"]
+    assert response["reasons"]
+    assert len(response["reasons"]) == len(response["windows"])
+    for reason in response["reasons"]:
+        assert reason["window"] >= 1
+        assert reason["mode"] in ("charge", "discharge")
+        assert reason["text"]
+    assert response["summary"]
+    # The PV forecast is reported as a discount, not a reduction of the charge.
+    assert any("PV-prognose" in note for note in response["notes"])
+
+
+@pytest.mark.asyncio
+async def test_auto_replan_switch_defaults_on(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    switch = hass.states.get("switch.goodwe_time_of_use_auto_herberekening")
+    assert switch is not None
+    assert switch.state == "on"
+
+
+@pytest.mark.asyncio
+async def test_auto_replan_writes_and_logs_the_reason(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {"time": (base + dt.timedelta(minutes=15 * i)).isoformat(), "price": i / 100.0}
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "50")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    writes: list[tuple[int, int]] = []
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        plan = await coordinator.async_auto_replan(force=True)
+        await hass.async_block_till_done()
+
+    # The inverter's own schedule differs from the plan, so it was rewritten.
+    assert plan is not None
+    assert writes
+    sensor = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    entry_log = sensor.attributes["entries"][0]
+    assert entry_log["action"] == "auto_replan"
+    assert entry_log["reason"]
+    assert entry_log["result"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_auto_replan_is_paused_by_the_switch(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {"time": (base + dt.timedelta(minutes=15 * i)).isoformat(), "price": i / 100.0}
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "50")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    writes: list[tuple[int, int]] = []
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.goodwe_time_of_use_auto_herberekening"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        result = await coordinator.async_auto_replan()
+        await hass.async_block_till_done()
+
+    assert result is None
+    assert writes == []
+
+
+@pytest.mark.asyncio
 async def test_config_flow_success(hass: HomeAssistant):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
