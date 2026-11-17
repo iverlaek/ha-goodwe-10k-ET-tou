@@ -172,33 +172,27 @@ The graph needs the recorder (it reads history through the HA API) and the
 
 `custom:goodwe-tou-planner-card` is a *planner* for the same four windows.
 
-**Two views.** The buttons at the top switch between:
+**One 24-hour timeline (00:00–24:00) with four sliders.** A **week strip**
+(ma…zo) at the top picks the day; the number under each day is how many windows
+run on it. On the timeline:
 
-- **Vandaag + morgen** (default) — a timeline at the top of the card, from the
-  current quarter hour to midnight at the end of tomorrow. Each window that runs
-  today and/or tomorrow is drawn as a draggable bar; drag the **left** and
-  **right** handles to move a window's start and stop. Bars snap to quarter hours
-  and **cannot overlap** — a handle stops at the neighbouring window. **Tomorrow
-  is greyed out** until the configured price entity exposes prices for tomorrow
-  (usually around 15:00): the bar stays visible but grey, and a **⚠ warning
-  triangle** marks the unknown part.
-- **Hele week (7 dagen)** — a calendar list of the seven days, each showing the
-  windows that run on that day.
+- the **grey background is the inverter's general mode** — outside the windows
+  the GoodWe is not in a Time-of-Use block. A summary band above the rows shows
+  the whole day at a glance (grey = general mode, red = charging, green =
+  discharging) together with what the inverter is doing **now**;
+- every window is a **compact row** (its number, a **Laden/Ontladen** button, the
+  power **%**, the start and stop time and the days) with its own **bar** on the
+  shared axis. Drag the **left/right handle** to move the start/stop; bars snap
+  to quarter hours and **cannot overlap** — a handle stops at the neighbouring
+  window. The **%** and the times can also be typed directly;
+- an **unconfigured window is grey** and stays inactive until you press
+  *Activeren*;
+- a window that has **already passed today** is greyed, tagged **afgelopen** and
+  moved to the bottom of the list. A window that does not run on the selected day
+  is dimmed and tagged *niet op <dag>*.
 
-**Every window** has its own row with:
-
-- an **Actief / Activeren** button — an inactive window collapses to one thin
-  grey line (so the active windows stand together); press *Activeren* to expand
-  and use it again;
-- one **power field** (0–100 %), shown in the column that matches the window's
-  direction: **Laden** on the left, **Ontladen** on the right. The empty cell in
-  the other column is clickable — clicking it moves the field there. The inverter
-  stores a single signed power per window, so a window has only one direction;
-- a **start** and a **stop** time (a window never crosses midnight);
-- **day chips** (ma…zo).
-
-The number of windows in use is chosen with the **Aantal vensters** selector
-(1–4); the inverter has four windows in total.
+Only the **order on screen** changes; the windows keep the number they have in
+the inverter, and *Toepassen* writes every window back to its own number.
 
 **Buttons at the bottom:**
 
@@ -214,9 +208,7 @@ The number of windows in use is chosen with the **Aantal vensters** selector
 type: custom:goodwe-tou-planner-card
 title: Laadplanning                                  # optional; " (Version x.y.z)" is appended
 prefix: goodwe_time_of_use                           # optional
-price_entity: sensor.average_electricity_price       # optional, for the grey-out
-windows: 4                                           # optional, 1..4
-view: now                                            # optional, "now" | "week"
+price_entity: sensor.average_electricity_price       # optional, for the price bars
 slot_minutes: 15                                     # optional, timeline granularity
 ```
 
