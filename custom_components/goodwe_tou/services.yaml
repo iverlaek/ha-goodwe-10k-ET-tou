@@ -231,3 +231,38 @@ forecast_soc:
           max: 100
           step: 1
           unit_of_measurement: "%"
+
+get_activity:
+  name: Get activity log
+  description: >-
+    Return the log of modifications sent to the inverter, newest first. Each
+    entry has a time, an action, the changes and windows that were written, and
+    whether the inverter confirmed it. Used by the log card.
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of entries to return.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 1000
+          step: 1
+    window:
+      name: Window
+      description: Only return entries that concern this Time-of-Use window.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 4
+          step: 1
+    result:
+      name: Result
+      description: Only return entries with this result.
+      required: false
+      selector:
+        select:
+          options:
+            - ok
+            - error

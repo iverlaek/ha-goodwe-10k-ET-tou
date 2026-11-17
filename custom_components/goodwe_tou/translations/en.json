@@ -53,6 +53,10 @@
     "forecast_soc": {
       "name": "Forecast state of charge",
       "description": "Project the battery state of charge from now until the end of tomorrow, following the Time-of-Use windows that are currently on the inverter. Returns a list of time/soc points."
+    },
+    "get_activity": {
+      "name": "Get activity log",
+      "description": "Return the log of modifications sent to the inverter, newest first, optionally filtered by window and result."
     }
   }
 }

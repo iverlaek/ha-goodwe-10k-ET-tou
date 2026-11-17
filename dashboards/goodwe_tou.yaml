@@ -22,6 +22,9 @@ views:
         title: Laadplanning
         price_entity: sensor.average_electricity_price
 
+      - type: custom:goodwe-tou-log-card
+        title: Logboek
+
       - type: entities
         title: Status
         show_header_toggle: false

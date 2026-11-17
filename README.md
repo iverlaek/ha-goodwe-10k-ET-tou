@@ -46,6 +46,12 @@ automate them from scripts, automations and dashboards.
 - A `goodwe_tou.forecast_soc` service that projects the battery state of charge
   from now until the end of tomorrow, following the windows that are on the
   inverter right now — used by the bundled card's graph.
+- An **activity log** of every modification sent to the inverter — successful
+  and failed, with the fields that changed, the plan that was written and the
+  error message. It survives a restart (persisted to `.storage`, newest 1000
+  entries), is exposed as the `sensor.goodwe_time_of_use_activity_log` sensor and
+  through the `goodwe_tou.get_activity` service, and is shown by the bundled
+  **log card** (`custom:goodwe-tou-log-card`).
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - Robust against a dongle that is **shared** with another integration: reads
@@ -96,6 +102,7 @@ With the default device name the entities are:
 | `button.goodwe_time_of_use_read_from_inverter` | Read the schedule from the inverter |
 | `button.goodwe_time_of_use_apply_to_inverter` | Apply the schedule to the inverter (verified) |
 | `button.goodwe_time_of_use_set_cheapest_hours` | Plan + apply the cheapest hours |
+| `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
 device. Always pick entities from the UI rather than hard-coding the IDs above.
@@ -200,6 +207,27 @@ view: now                                            # optional, "now" | "week"
 slot_minutes: 15                                     # optional, timeline granularity
 ```
 
+## The log card
+
+`custom:goodwe-tou-log-card` is a **read-only** activity log: every modification
+the integration sent to the inverter, newest first. Each entry shows when it
+happened, what action it was, the fields that changed (old → new), the plan that
+was written and whether the inverter **confirmed** it — or, in red, why it did
+not (for example a read-back mismatch or a timeout).
+
+Filters at the top narrow the list by **result** (Alles / Gelukt / Mislukt) and
+by **window** (Alle / 1–4). The card fetches the full log through the
+`goodwe_tou.get_activity` service, so it can show more entries than fit in the
+sensor's attributes, and it refreshes whenever the activity sensor changes:
+
+```yaml
+type: custom:goodwe-tou-log-card
+title: Logboek                                   # optional; " (Version x.y.z)" is appended
+prefix: goodwe_time_of_use                        # optional entity-id prefix
+sensor: sensor.goodwe_time_of_use_activity_log    # optional, refresh trigger
+limit: 200                                        # optional, entries fetched
+```
+
 ## Cheapest hours
 
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
@@ -289,6 +317,29 @@ points:
     soc: 77.0
   # …
 ```
+
+## Reading the activity log
+
+Every write the integration sends to the inverter is recorded (successful and
+failed) and kept newest-first, capped at 1000 entries and persisted across
+restarts. The `sensor.goodwe_time_of_use_activity_log` sensor exposes the count
+as its state and the newest 50 entries as its `entries` attribute, together with
+`total`, `last_time`, `last_action` and `last_result`.
+
+`goodwe_tou.get_activity` returns the full log, optionally filtered:
+
+```yaml
+action: goodwe_tou.get_activity
+data:
+  limit: 100        # optional, newest N entries (1..1000)
+  window: 2         # optional, only entries about this window
+  result: error     # optional, "ok" or "error"
+response_variable: log
+```
+
+Each entry has `time`, `action`, `result` (`ok` / `error`), `error` (or `null`),
+`changes` (a list of `{field, old, new}`) and `windows` (the plan that was
+written, `{n, start, stop, power, days}`). This is what the log card uses.
 
 ## Applying an explicit plan
 

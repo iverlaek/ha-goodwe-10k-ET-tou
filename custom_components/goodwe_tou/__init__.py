@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
+from .activity import MAX_ENTRIES
 from .const import (
     CONF_CAPACITY_KWH,
     CONF_COMM_ADDR,
@@ -43,16 +44,19 @@ PLATFORMS = [
     Platform.TEXT,
     Platform.BUTTON,
     Platform.SWITCH,
+    Platform.SENSOR,
 ]
 
 SERVICE_SET_CHEAPEST_HOURS = "set_cheapest_hours"
 SERVICE_CALCULATE_CHEAPEST_HOURS = "calculate_cheapest_hours"
 SERVICE_SET_WINDOWS = "set_windows"
 SERVICE_FORECAST_SOC = "forecast_soc"
+SERVICE_GET_ACTIVITY = "get_activity"
 
 _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
 _PLANNER_FILE = "goodwe-tou-planner-card.js"
+_LOG_FILE = "goodwe-tou-log-card.js"
 _FRONTEND_KEY = "__frontend__"
 
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
@@ -113,6 +117,16 @@ SERVICE_SET_WINDOWS_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_GET_ACTIVITY_SCHEMA = vol.Schema(
+    {
+        vol.Optional("limit"): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=MAX_ENTRIES)
+        ),
+        vol.Optional("window"): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
+        vol.Optional("result"): vol.In(["ok", "error"]),
+    }
+)
+
 
 def _coordinators(hass: HomeAssistant) -> list[GoodweTouCoordinator]:
     return [
@@ -141,6 +155,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         )
         add_extra_js_url(hass, f"{_URL_PATH}/{_CARD_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_PLANNER_FILE}")
+        add_extra_js_url(hass, f"{_URL_PATH}/{_LOG_FILE}")
     except Exception:
         _LOGGER.warning(
             "Could not register the GoodWe TOU Lovelace card", exc_info=True
@@ -158,6 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     coordinator = GoodweTouCoordinator(hass, entry, client)
 
+    await coordinator.async_load_activity()
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -258,5 +274,28 @@ def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_FORECAST_SOC,
             _handle_forecast_soc,
             schema=SERVICE_FORECAST_SOC_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_ACTIVITY):
+
+        async def _handle_get_activity(
+            call: ServiceCall,
+        ) -> dict[str, list[dict]]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+            entries = coordinators[0].activity(
+                window=call.data.get("window"),
+                result=call.data.get("result"),
+                limit=call.data.get("limit"),
+            )
+            return {"entries": entries, "count": len(entries)}
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_ACTIVITY,
+            _handle_get_activity,
+            schema=SERVICE_GET_ACTIVITY_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )

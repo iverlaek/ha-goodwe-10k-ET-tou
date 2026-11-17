@@ -5,15 +5,24 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .activity import (
+    MAX_ENTRIES,
+    filter_entries,
+    make_entry,
+    trim,
+    window_changes,
+    window_summary,
+)
 from .const import (
     CONF_CAPACITY_KWH,
     CONF_MIN_SOC,
@@ -84,7 +93,67 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self._io_lock = asyncio.Lock()
-        self.data = {"windows": {}, "work_mode": None}
+        self.data = {"windows": {}, "work_mode": None, "activity": []}
+        self._activity: list[dict[str, Any]] = []
+        self._activity_store: Store = Store(
+            hass, 1, f"{DOMAIN}_activity_{entry.entry_id}"
+        )
+
+    # -- activity log ------------------------------------------------------
+
+    async def async_load_activity(self) -> None:
+        """Load the persisted activity log (if any) into memory."""
+        try:
+            stored = await self._activity_store.async_load()
+        except Exception:  # pragma: no cover - corrupt/unreadable store
+            _LOGGER.warning("Could not load the activity log", exc_info=True)
+            return
+        if isinstance(stored, list):
+            self._activity = [entry for entry in stored if isinstance(entry, dict)]
+            trim(self._activity, MAX_ENTRIES)
+        self._publish(self.data)
+
+    def _schedule_save(self) -> None:
+        self._activity_store.async_delay_save(lambda: list(self._activity), 2.0)
+
+    def _record(
+        self,
+        action: str,
+        *,
+        changes: Sequence[Mapping[str, Any]] | None = None,
+        windows: Sequence[Mapping[str, Any]] | None = None,
+        result: str = "ok",
+        error: str | None = None,
+    ) -> None:
+        """Append one entry to the log and persist it."""
+        self._activity.insert(
+            0,
+            make_entry(
+                action,
+                changes=changes,
+                windows=windows,
+                result=result,
+                error=error,
+            ),
+        )
+        trim(self._activity, MAX_ENTRIES)
+        self._schedule_save()
+        self._publish(self.data)
+
+    def activity(
+        self,
+        *,
+        window: int | None = None,
+        result: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the activity log, newest first, optionally filtered."""
+        return filter_entries(self._activity, window=window, result=result, limit=limit)
+
+    def _publish(self, data: dict[str, Any]) -> None:
+        """Push fresh data to the entities, including the current activity log."""
+        data["activity"] = list(self._activity)
+        self.async_set_updated_data(data)
 
     # -- device access -----------------------------------------------------
 
@@ -145,9 +214,11 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            return await self._call(self._read_all)
+            data = await self._call(self._read_all)
         except GoodweError as err:
             raise UpdateFailed(str(err)) from err
+        data["activity"] = list(self._activity)
+        return data
 
     async def _write(self, mapping: Mapping[int, int]) -> None:
         try:
@@ -186,7 +257,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             actual = self._registers_for(last["windows"])
             actual[WORK_MODE_REGISTER] = last["work_mode"]
             if all(actual.get(register) == value for register, value in mapping.items()):
-                self.async_set_updated_data(last)
+                self._publish(last)
                 return
             _LOGGER.warning(
                 "Write verification attempt %s/%s did not match, retrying",
@@ -195,7 +266,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         if last is not None:
-            self.async_set_updated_data(last)
+            self._publish(last)
         raise HomeAssistantError(
             "The inverter did not accept the change (read-back mismatch after "
             f"{_APPLY_ATTEMPTS} attempts). Another integration may be polling the "
@@ -212,12 +283,35 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise HomeAssistantError(
                 f"Could not read from the inverter: {err}"
             ) from err
-        self.async_set_updated_data(data)
+        self._publish(data)
+
+    async def _logged(
+        self,
+        action: str,
+        operation: Awaitable[None],
+        *,
+        changes: Sequence[Mapping[str, Any]] | None = None,
+        windows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Run a write operation and record it in the activity log."""
+        try:
+            await operation
+        except HomeAssistantError as err:
+            self._record(
+                action, changes=changes, windows=windows, result="error", error=str(err)
+            )
+            raise
+        self._record(action, changes=changes, windows=windows)
 
     async def async_apply(self) -> None:
         """Write every window to the inverter and verify the result."""
-        windows = {number: self._window(number) for number in WINDOWS}
-        await self._write_verified(self._registers_for(windows))
+        current = {number: self._window(number) for number in WINDOWS}
+        targets = [window_summary(number, current[number]) for number in WINDOWS]
+        await self._logged(
+            "apply",
+            self._write_verified(self._registers_for(current)),
+            windows=targets,
+        )
 
     async def async_set_windows(
         self, windows: Sequence[Mapping[str, Any]]
@@ -241,8 +335,15 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             )
         plan = plan_registers(plan)
-        mapping = self._registers_for(dict(zip(WINDOWS, plan, strict=True)))
-        await self._write_verified(mapping)
+        after = dict(zip(WINDOWS, plan, strict=True))
+        changes = window_changes(dict(self.data["windows"]), after)
+        targets = [window_summary(number, after[number]) for number in WINDOWS]
+        await self._logged(
+            "set_windows",
+            self._write_verified(self._registers_for(after)),
+            changes=changes,
+            windows=targets,
+        )
 
     async def async_set_window_time(
         self, number: int, kind: str, value: dt.time
@@ -250,8 +351,12 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         window = self._window(number)
         updated = replace(window, **{kind: value})
         relative = 0 if kind == "start" else 1
-        await self._write_verified(
-            {base_for(number) + relative: window_registers(updated)[relative]}
+        await self._logged(
+            "window_time",
+            self._write_verified(
+                {base_for(number) + relative: window_registers(updated)[relative]}
+            ),
+            changes=window_changes({number: window}, {number: updated}),
         )
 
     async def async_set_window_power(self, number: int, signed_power: int) -> None:
@@ -264,19 +369,41 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             days=window.days,
         )
         registers = window_registers(updated)
-        await self._write_verified(
-            {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
+        await self._logged(
+            "window_power",
+            self._write_verified(
+                {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
+            ),
+            changes=window_changes({number: window}, {number: updated}),
         )
 
     async def async_set_window_days(self, number: int, days: str) -> None:
         window = self._window(number)
         updated = replace(window, days=days)
         registers = window_registers(updated)
-        await self._write_verified({base_for(number) + 3: registers[3]})
+        await self._logged(
+            "window_days",
+            self._write_verified({base_for(number) + 3: registers[3]}),
+            changes=window_changes({number: window}, {number: updated}),
+        )
 
     async def async_set_eco(self, enabled: bool) -> None:
         value = ECO_WORK_MODE if enabled else GENERAL_WORK_MODE
-        await self._write_verified({WORK_MODE_REGISTER: value})
+        work_mode = self.data.get("work_mode")
+        old = None
+        if work_mode is not None:
+            old = "eco" if work_mode == ECO_WORK_MODE else "general"
+        await self._logged(
+            "eco",
+            self._write_verified({WORK_MODE_REGISTER: value}),
+            changes=[
+                {
+                    "field": "eco_mode",
+                    "old": old,
+                    "new": "eco" if enabled else "general",
+                }
+            ],
+        )
 
     # -- cheapest hours ----------------------------------------------------
 
@@ -416,10 +543,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> list[TouWindow]:
         """Plan and apply the cheapest charging / most expensive discharging hours."""
         plan = plan_registers(self._plan_cheapest_hours(overrides))
+        after = dict(zip(WINDOWS, plan, strict=True))
+        changes = window_changes(dict(self.data["windows"]), after)
+        targets = [window_summary(number, after[number]) for number in WINDOWS]
 
-        for number, window in zip(WINDOWS, plan, strict=True):
-            self.data["windows"][number] = window
-        self.async_set_updated_data(self.data)
+        self.data["windows"].update(after)
+        self._publish(self.data)
 
-        await self.async_apply()
+        await self._logged(
+            "cheapest_hours",
+            self._write_verified(self._registers_for(after)),
+            changes=changes,
+            windows=targets,
+        )
         return plan

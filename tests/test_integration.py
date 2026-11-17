@@ -474,6 +474,130 @@ async def test_forecast_soc_service_returns_points(
 
 
 @pytest.mark.asyncio
+async def test_activity_log_records_a_write(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": "number.goodwe_time_of_use_window_1_power", "value": 50},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    assert sensor is not None
+    assert sensor.state == "1"
+    assert sensor.attributes["last_action"] == "window_power"
+    assert sensor.attributes["last_result"] == "ok"
+    assert sensor.attributes["entries"][0]["changes"] == [
+        {"field": "window_1_power", "old": -100, "new": 50}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_activity_log_records_a_failed_write(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        # A write that never lands: the read-back never matches.
+        patch.object(GoodweUdpClient, "write_register", return_value=None),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_windows",
+                {
+                    "windows": [
+                        {"start": "01:00", "stop": "02:00", "power": -100},
+                        {"start": "03:00", "stop": "04:00", "power": -100},
+                    ]
+                },
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    assert sensor.attributes["last_result"] == "error"
+    entry_log = sensor.attributes["entries"][0]
+    assert entry_log["action"] == "set_windows"
+    assert entry_log["result"] == "error"
+    assert entry_log["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_activity_service_filters_by_window(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        for window, value in ((2, -50), (1, 30)):
+            await hass.services.async_call(
+                "number",
+                "set_value",
+                {
+                    "entity_id": f"number.goodwe_time_of_use_window_{window}_power",
+                    "value": value,
+                },
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN, "get_activity", {"window": 2}, blocking=True, return_response=True
+        )
+        await hass.async_block_till_done()
+
+    assert response["count"] == 1
+    assert response["entries"][0]["changes"][0]["field"] == "window_2_power"
+
+
+@pytest.mark.asyncio
+async def test_activity_log_loads_persisted_entries(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    from homeassistant.helpers.storage import Store
+
+    seed = Store(hass, 1, f"{DOMAIN}_activity_{entry.entry_id}")
+    await seed.async_save(
+        [
+            {
+                "time": "2026-01-01T00:00:00+00:00",
+                "action": "eco",
+                "result": "ok",
+                "error": None,
+                "changes": [{"field": "eco_mode", "old": "general", "new": "eco"}],
+                "windows": [],
+            }
+        ]
+    )
+
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    assert sensor.state == "1"
+    assert sensor.attributes["entries"][0]["action"] == "eco"
+
+
+@pytest.mark.asyncio
 async def test_config_flow_success(hass: HomeAssistant):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
