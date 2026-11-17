@@ -223,43 +223,76 @@ def _select_indices(
     return [index for index, _ in ordered[:count]]
 
 
-def _select_discharge_indices(
+def _best_contiguous_block(
+    day_slots: Sequence[tuple[int, PriceSlot]], count: int
+) -> list[int]:
+    """Indices of the ``count`` consecutive slots with the highest total price.
+
+    Slots are consecutive only when their horizon indices are adjacent, so a gap
+    left by a charge slot is never filled in, and only one day's slots are passed
+    in, so the block never crosses midnight.
+    """
+    if count <= 0 or not day_slots:
+        return []
+    groups: list[list[tuple[int, PriceSlot]]] = []
+    for item in day_slots:
+        if groups and item[0] == groups[-1][-1][0] + 1:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+    best: list[int] = []
+    best_sum = float("-inf")
+    for group in groups:
+        size = min(count, len(group))
+        prices = [slot.price for _, slot in group]
+        window = sum(prices[:size])
+        best_start = 0
+        best_window = window
+        for start in range(1, len(prices) - size + 1):
+            window += prices[start + size - 1] - prices[start - 1]
+            if window > best_window:
+                best_window = window
+                best_start = start
+        if best_window > best_sum:
+            best_sum = best_window
+            best = [group[i][0] for i in range(best_start, best_start + size)]
+    return best
+
+
+def _discharge_runs_per_day(
     remaining: Sequence[tuple[int, PriceSlot]],
     *,
     discharge_per_slot: float,
     total_energy_kwh: float,
-    per_day_energy_kwh: float | None,
-) -> list[int]:
-    """Pick the most expensive slots to discharge in.
+    per_day_energy_kwh: float,
+    max_runs: int,
+) -> list[tuple[int, int]]:
+    """One capped, contiguous discharge run per calendar day (today first).
 
-    Without a per-day budget the whole horizon shares one budget, so the most
-    expensive hours win no matter which day they fall on. When
-    ``per_day_energy_kwh`` is given the budget is applied to every calendar day
-    separately, so the rest of today gets its own discharge window instead of the
-    entire budget being spent on tomorrow. Days are filled chronologically (today
-    first) and the total is still capped by ``total_energy_kwh``.
+    Each day's budget is the export cap, so the rest of today gets its own
+    discharge window instead of the whole budget being spent on tomorrow's peak.
+    Picking a contiguous block keeps the window at the cap instead of stretching
+    it over the cheap hours between two peaks. Days are filled chronologically and
+    the total stays capped by ``total_energy_kwh``.
     """
-    if total_energy_kwh <= 0 or discharge_per_slot <= 0 or not remaining:
+    if total_energy_kwh <= 0 or discharge_per_slot <= 0 or max_runs <= 0:
         return []
-    if per_day_energy_kwh is None:
-        count = min(len(remaining), math.ceil(total_energy_kwh / discharge_per_slot))
-        return _select_indices(remaining, count, cheapest=False)
-
     by_day: dict[dt.date, list[tuple[int, PriceSlot]]] = {}
     for index, slot in remaining:
         by_day.setdefault(slot.time.date(), []).append((index, slot))
-
-    picked: list[int] = []
+    runs: list[tuple[int, int]] = []
     left = total_energy_kwh
     for day in sorted(by_day):
-        if left <= 0:
+        if left <= 0 or len(runs) >= max_runs:
             break
         budget = min(per_day_energy_kwh, left)
         count = min(len(by_day[day]), math.ceil(budget / discharge_per_slot))
-        day_indices = _select_indices(by_day[day], count, cheapest=False)
-        picked.extend(day_indices)
-        left -= len(day_indices) * discharge_per_slot
-    return picked
+        block = _best_contiguous_block(by_day[day], count)
+        if not block:
+            continue
+        runs.append((block[0], block[-1]))
+        left -= len(block) * discharge_per_slot
+    return runs
 
 
 def _run_stats(
@@ -418,17 +451,32 @@ def build_plan(
 
     used = set(charge_idx)
     remaining = [(index, slot) for index, slot in indexed if index not in used]
-    discharge_idx = _select_discharge_indices(
-        remaining,
-        discharge_per_slot=discharge_per_slot,
-        total_energy_kwh=available_kwh,
-        per_day_energy_kwh=export_cap_kwh,
-    )
-    discharge_runs = (
-        _merge_runs(_group_runs(discharge_idx), discharge_windows)
-        if discharge_idx and discharge_windows
-        else []
-    )
+    if export_cap_kwh is not None:
+        # One capped, contiguous window per day so the export budget is spread
+        # over the days instead of being spent on a single peak.
+        discharge_runs = (
+            _discharge_runs_per_day(
+                remaining,
+                discharge_per_slot=discharge_per_slot,
+                total_energy_kwh=available_kwh,
+                per_day_energy_kwh=export_cap_kwh,
+                max_runs=discharge_windows,
+            )
+            if discharge_windows
+            else []
+        )
+    else:
+        count = (
+            min(len(remaining), math.ceil(available_kwh / discharge_per_slot))
+            if available_kwh > 0
+            else 0
+        )
+        discharge_idx = _select_indices(remaining, count, cheapest=False)
+        discharge_runs = (
+            _merge_runs(_group_runs(discharge_idx), discharge_windows)
+            if discharge_idx and discharge_windows
+            else []
+        )
 
     # -- reasoning ---------------------------------------------------------
     notes: list[str] = []

@@ -305,6 +305,34 @@ def test_build_plan_discharges_on_today_and_tomorrow():
     assert any("dinsdag" in reason.text for reason in plan.reasons)
 
 
+def test_discharge_runs_do_not_fill_the_gap_between_peaks():
+    """Two peaks with a cheap gap must stay one capped block, not be merged.
+
+    Merging the two runs would fill the cheap hours in between and stretch the
+    window past the one-hour export cap (the released 0.7.1 produced a 90-minute,
+    9 kWh window this way).
+    """
+    start = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    prices = [0.10] * 96
+    for i in range(20, 24):  # peak A: 05:00-06:00
+        prices[i] = 0.40
+    for i in range(28, 32):  # peak B: 07:00-08:00, a cheap hour in between
+        prices[i] = 0.40
+    slots = _slots_from_prices(start, prices)
+
+    runs = optimizer._discharge_runs_per_day(
+        list(enumerate(slots)),
+        discharge_per_slot=1.5,
+        total_energy_kwh=6.0,
+        per_day_energy_kwh=6.0,
+        max_runs=2,
+    )
+
+    assert len(runs) == 1
+    first, last = runs[0]
+    assert last - first + 1 == 4  # 60 minutes at the cap, not 12 slots
+
+
 def _slots_from_prices(start: dt.datetime, prices, step_minutes: int = 15):
     return [
         optimizer.PriceSlot(start + dt.timedelta(minutes=step_minutes * i), price)

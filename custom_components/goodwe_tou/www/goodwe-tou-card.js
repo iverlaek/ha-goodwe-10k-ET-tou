@@ -22,7 +22,7 @@
  *   hours_back: 24                                # optional, measured hours shown
  */
 
-const CARD_VERSION = "0.7.1";
+const CARD_VERSION = "0.7.2";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
 const HOURS_BACK_DEFAULT = 24;
