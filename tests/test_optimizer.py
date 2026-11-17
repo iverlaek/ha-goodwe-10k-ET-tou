@@ -271,6 +271,110 @@ def test_build_plan_export_cap_limits_discharge():
     assert discharge_minutes(capped) < discharge_minutes(uncapped)
 
 
+def _slots_from_prices(start: dt.datetime, prices, step_minutes: int = 15):
+    return [
+        optimizer.PriceSlot(start + dt.timedelta(minutes=step_minutes * i), price)
+        for i, price in enumerate(prices)
+    ]
+
+
+def test_charging_is_skipped_when_the_spread_does_not_cover_the_losses():
+    """With flat prices the round-trip losses make charging a losing deal."""
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots_from_prices(start, [0.20] * 96)
+    plan = optimizer.build_plan(
+        slots,
+        start,
+        soc=40,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        target_soc=100,
+        min_soc=20,
+        standby_kw=0.0,
+        rte=0.85,
+    )
+    assert plan.windows, "the battery still discharges its existing charge"
+    assert all(w.mode != "charge" for w in plan.windows)
+    assert any("overgeslagen" in note for note in plan.notes)
+
+
+def test_charging_is_kept_when_the_spread_beats_the_losses():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    prices = [0.05] * 20 + [0.30] * 76
+    slots = _slots_from_prices(start, prices)
+    plan = optimizer.build_plan(
+        slots,
+        start,
+        soc=20,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        target_soc=100,
+        min_soc=20,
+        standby_kw=0.0,
+        rte=0.85,
+    )
+    assert any(w.mode == "charge" for w in plan.windows)
+    assert not any("overgeslagen" in note for note in plan.notes)
+
+
+def test_rte_sizes_the_charge_window():
+    """A lossy battery needs more cheap quarter hours to reach the target."""
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    prices = [0.05] * 20 + [0.30] * 76
+    slots = _slots_from_prices(start, prices)
+
+    def charge_minutes(rte):
+        plan = optimizer.build_plan(
+            slots,
+            start,
+            soc=20,
+            capacity_kwh=24,
+            charge_power_kw=6,
+            discharge_power_kw=6,
+            target_soc=100,
+            min_soc=20,
+            standby_kw=0.0,
+            rte=rte,
+        )
+        return sum(
+            (w.stop.hour * 60 + w.stop.minute) - (w.start.hour * 60 + w.start.minute)
+            for w in plan.windows
+            if w.mode == "charge"
+        )
+
+    assert charge_minutes(0.85) > charge_minutes(1.0)
+
+
+def test_forecast_soc_applies_round_trip_efficiency():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    window = optimizer.TouWindow(
+        start=dt.time(2, 0), stop=dt.time(3, 0), mode="charge", power=100, days="mon"
+    )
+    lossless = optimizer.forecast_soc(
+        [window],
+        day,
+        day + dt.timedelta(hours=3),
+        soc=50,
+        capacity_kwh=10,
+        power_kw=5,
+        rte=1.0,
+    )
+    lossy = optimizer.forecast_soc(
+        [window],
+        day,
+        day + dt.timedelta(hours=3),
+        soc=50,
+        capacity_kwh=10,
+        power_kw=5,
+        rte=0.5,
+    )
+    # 5 kW for 1 h = 5 kWh; half of it lands in a 10 kWh battery = +25%.
+    assert dict(lossless)[day + dt.timedelta(hours=3)] == 100
+    assert dict(lossy)[day + dt.timedelta(hours=3)] == 75
+
+
 def test_windows_cost_counts_charge_and_discharge():
     day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
     slots = [

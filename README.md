@@ -252,9 +252,16 @@ cheapest charging hours and the most expensive discharging hours.
 
 The house's standby consumption and the GoodWe's power limits are taken into
 account: the battery charges at up to `charge_kw` (6 kW, AC + DC together) and
-discharges at up to `discharge_kw` (7 kW). Discharging is capped at
+discharges at up to `discharge_kw` (6 kW over AC). Discharging is capped at
 `export_hours` at full power, so a bad solar period cannot drain the battery so
 early that the house has to buy expensive power at the peak.
+
+Charging is only planned when it actually pays off. Every kWh taken from the grid
+is grossed up for the round-trip losses of the battery (`rte`, 85% by default),
+so it is roughly 15% more expensive once it is stored. The plan charges in the
+cheapest quarter hours only when that price still beats the most expensive hours
+the house would otherwise buy later. When the spread does not cover the losses,
+the battery is left alone and a note explains why.
 
 The defaults can be changed in the integration **Configure** dialog or passed to
 the service:
@@ -267,12 +274,13 @@ data:
   pv_entity: sensor.energy_production_today_remaining
   capacity_kwh: 24
   charge_kw: 6
-  discharge_kw: 7
+  discharge_kw: 6
   standby_kw: 1.2
   export_hours: 1
   target_soc: 100
   min_soc: 20
   pv_factor: 0.5
+  rte: 0.85
 ```
 
 | Option | Default | Meaning |
@@ -282,12 +290,13 @@ data:
 | `pv_entity` | `sensor.energy_production_today_remaining` | Remaining PV production today (kWh) |
 | `capacity_kwh` | `24` | Usable battery capacity |
 | `charge_kw` | `6` | Maximum charge power (GoodWe limit, AC + DC) |
-| `discharge_kw` | `7` | Maximum discharge power |
+| `discharge_kw` | `6` | Maximum discharge power (GoodWe limit over AC) |
 | `standby_kw` | `1.2` | House standby consumption the battery covers in ECO mode |
 | `export_hours` | `1` | How long the battery may export at full power before it is kept for the house; `0` disables the cap |
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
 | `pv_factor` | `0.5` | Fraction of the PV forecast counted as a discount on the energy the house would buy |
+| `rte` | `0.85` | Round-trip efficiency of the battery; charging only pays off when the cheap price / `rte` beats the price bought later |
 | `power_kw` | `7` | Legacy combined charge/discharge power, used when `charge_kw`/`discharge_kw` are not set |
 
 ### Automatic quarter-hour re-check
@@ -347,9 +356,10 @@ data:
   soc_entity: sensor.battery_state_of_charge   # optional
   capacity_kwh: 24                             # optional
   charge_kw: 6                                 # optional; max charge power
-  discharge_kw: 7                              # optional; max discharge power
+  discharge_kw: 6                              # optional; max discharge power
   standby_kw: 1.2                              # optional; house standby load
   min_soc: 20                                  # optional; discharge floor
+  rte: 0.85                                    # optional; round-trip efficiency
 response_variable: forecast
 ```
 

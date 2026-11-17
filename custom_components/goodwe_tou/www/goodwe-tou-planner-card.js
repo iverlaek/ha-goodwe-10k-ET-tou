@@ -49,7 +49,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.6.1";
+const CARD_VERSION = "0.6.2";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -220,6 +220,9 @@ const STYLES = `
   .days { display: flex; gap: 4px; margin-top: 8px; }
   .chip { flex: 1; padding: 5px 0; border-radius: 6px; border: 1px solid var(--divider-color); background: transparent; color: var(--secondary-text-color); font: inherit; font-size: .72rem; cursor: pointer; }
   .chip.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+  /* In "Vandaag + morgen" every window runs on today and tomorrow, so the day
+     chips are only needed in the whole-week view. */
+  ha-card:not(.view-week) .row .days { display: none; }
 
   .week { display: none; }
   .wday { padding: 8px 0; border-top: 1px solid var(--divider-color); }
@@ -523,6 +526,15 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._t1 = startOfDay(addDays(now, 2));
   }
 
+  // In "Vandaag + morgen" a window always runs on both today and tomorrow, so
+  // the stored days are ignored and mapped to the real weekdays of those days.
+  _effectiveDays(seg) {
+    if (this._view === "now") {
+      return new Set([weekdayKey(this._todayDate), weekdayKey(this._tomorrowDate)]);
+    }
+    return seg.days;
+  }
+
   _readWindows() {
     this._segs = [];
     for (let n = 1; n <= MAX_WINDOWS; n++) {
@@ -630,13 +642,21 @@ class GoodweTouPlannerCard extends HTMLElement {
       this._hintEl.className = "hint";
       this._hintEl.textContent =
         "Hele week: elk venster loopt op de gekozen dagen (chips onderaan elk venster).";
-    } else if (this._tomorrowKnown) {
-      this._hintEl.className = "hint";
-      this._hintEl.textContent = "Prijzen t/m morgen bekend.";
     } else {
-      this._hintEl.className = "hint warn";
-      this._hintEl.textContent =
-        "\u26a0 Prijzen van morgen zijn nog niet bekend (meestal rond 15:00); de tijdbalk is daar grijs.";
+      const todayLabel = DAY_LABELS[(this._todayDate.getDay() + 6) % 7];
+      const tomorrowLabel = DAY_LABELS[(this._tomorrowDate.getDay() + 6) % 7];
+      const base =
+        `Vandaag + morgen: elk venster geldt automatisch voor ` +
+        `${todayLabel} en ${tomorrowLabel}.`;
+      if (this._tomorrowKnown) {
+        this._hintEl.className = "hint";
+        this._hintEl.textContent = `${base} Prijzen t/m morgen bekend.`;
+      } else {
+        this._hintEl.className = "hint warn";
+        this._hintEl.textContent =
+          `${base} \u26a0 Prijzen van morgen zijn nog niet bekend ` +
+          "(meestal rond 15:00); de tijdbalk is daar grijs.";
+      }
     }
 
     if (this._view === "now") {
@@ -711,8 +731,9 @@ class GoodweTouPlannerCard extends HTMLElement {
     row.chargeVal.textContent = `${seg.charge}%`;
     row.dischargeVal.textContent = `${seg.discharge}%`;
 
+    const effectiveDays = this._effectiveDays(seg);
     for (const key of DAY_KEYS) {
-      row.chips[key].classList.toggle("on", seg.days.has(key));
+      row.chips[key].classList.toggle("on", effectiveDays.has(key));
     }
 
     const mid = this._pct(this._tMid);
@@ -740,12 +761,13 @@ class GoodweTouPlannerCard extends HTMLElement {
       return;
     }
     const mode = this._mode(seg);
+    const effectiveDays = this._effectiveDays(seg);
     let drew = false;
     for (const [tag, dayDate] of [
       ["today", this._todayDate],
       ["tomorrow", this._tomorrowDate],
     ]) {
-      if (!seg.days.has(weekdayKey(dayDate))) continue;
+      if (!effectiveDays.has(weekdayKey(dayDate))) continue;
       const start = withHM(dayDate, seg.startHM);
       const stop = withHM(dayDate, seg.stopHM);
       const from = Math.max(start.getTime(), this._t0.getTime());
@@ -789,7 +811,7 @@ class GoodweTouPlannerCard extends HTMLElement {
       let count = 0;
       for (let i = 0; i < this._count; i++) {
         const seg = this._segs[i];
-        if (!seg.enabled || !seg.days.has(key)) continue;
+        if (!seg.enabled || !this._effectiveDays(seg).has(key)) continue;
         const mode = this._mode(seg);
         if (mode === "off") continue;
         const item = document.createElement("div");
@@ -1062,7 +1084,7 @@ class GoodweTouPlannerCard extends HTMLElement {
       const seg = this._segs[i];
       const mode = this._mode(seg);
       if (!seg.enabled || mode === "off") continue;
-      const days = DAY_KEYS.filter((key) => seg.days.has(key));
+      const days = DAY_KEYS.filter((key) => this._effectiveDays(seg).has(key));
       if (!days.length) continue;
       const power = mode === "charge" ? -seg.charge : seg.discharge;
       windows.push({

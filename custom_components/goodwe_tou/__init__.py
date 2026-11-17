@@ -29,6 +29,7 @@ from .const import (
     CONF_PRICE_ENTITY,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
+    CONF_RTE,
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
@@ -96,6 +97,9 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         vol.Optional(CONF_PV_FACTOR): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=1)
         ),
+        vol.Optional(CONF_RTE): vol.All(
+            vol.Coerce(float), vol.Range(min=0.1, max=1)
+        ),
     }
 )
 
@@ -119,6 +123,9 @@ SERVICE_FORECAST_SOC_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_MIN_SOC): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
+        vol.Optional(CONF_RTE): vol.All(
+            vol.Coerce(float), vol.Range(min=0.1, max=1)
         ),
     }
 )

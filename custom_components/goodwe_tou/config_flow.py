@@ -26,6 +26,7 @@ from .const import (
     CONF_PRICE_ENTITY,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
+    CONF_RTE,
     CONF_SCAN_INTERVAL,
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
@@ -42,6 +43,7 @@ from .const import (
     DEFAULT_PRICE_ENTITY,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
+    DEFAULT_RTE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SOC_ENTITY,
     DEFAULT_STANDBY_KW,
@@ -175,6 +177,10 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_PV_FACTOR,
                     default=default(CONF_PV_FACTOR, DEFAULT_PV_FACTOR),
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+                vol.Optional(
+                    CONF_RTE,
+                    default=default(CONF_RTE, DEFAULT_RTE),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1)),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

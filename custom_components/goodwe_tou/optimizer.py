@@ -37,6 +37,7 @@ from .const import (
     DEFAULT_EXPORT_HOURS,
     DEFAULT_MIN_SOC,
     DEFAULT_POWER_KW,
+    DEFAULT_RTE,
     DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
     SLOT_MINUTES,
@@ -245,6 +246,7 @@ def build_plan(
     pv_credit_kwh: float = 0.0,
     standby_kw: float = DEFAULT_STANDBY_KW,
     export_hours: float | None = DEFAULT_EXPORT_HOURS,
+    rte: float = DEFAULT_RTE,
     max_windows: int = len(WINDOWS),
     charge_windows: int = 2,
     discharge_windows: int = 2,
@@ -259,10 +261,13 @@ def build_plan(
     ``pv_credit_kwh`` is the forecast PV that will be produced; it is reported as
     a discount on the energy the house would otherwise buy, so it explains why
     charging cheaply now is worth it. ``standby_kw`` is the house load the battery
-    has to cover in ECO mode; it is only used to explain the plan (the inverter's
-    own ECO self-consumption handles it). ``export_hours`` caps the energy that
-    may be exported at full discharge power so a bad solar period cannot drain the
-    battery too early; pass ``None`` to disable the cap.
+    has to cover in ECO mode; it drains the battery and has to be charged back
+    too. ``export_hours`` caps the energy that may be exported at full discharge
+    power so a bad solar period cannot drain the battery too early; pass ``None``
+    to disable the cap. ``rte`` is the round-trip efficiency of the battery:
+    because it loses energy, a cheap hour is only worth using when
+    ``charge_price / rte < later_buy_price``. When the spread does not cover the
+    losses the plan leaves the battery alone instead of charging it.
 
     The result is sorted by start time, never exceeds ``max_windows`` and carries
     one :class:`PlanReason` per window plus general ``notes``.
@@ -277,7 +282,6 @@ def build_plan(
     slot_hours = slot_minutes / 60.0
     charge_power_kw = max(0.0, float(charge_power_kw))
     discharge_power_kw = max(0.0, float(discharge_power_kw))
-    charge_per_slot = max(0.1, charge_power_kw * slot_hours)
     discharge_per_slot = max(0.1, discharge_power_kw * slot_hours)
 
     capacity_kwh = max(0.0, float(capacity_kwh))
@@ -285,31 +289,15 @@ def build_plan(
     min_soc = min(target_soc, max(0.0, float(min_soc)))
     soc = min(100.0, max(0.0, float(soc)))
     pv_credit_kwh = max(0.0, float(pv_credit_kwh))
+    standby_kw = max(0.0, float(standby_kw))
+    rte = min(1.0, max(0.1, float(rte)))
 
-    needed_kwh = (target_soc - soc) / 100.0 * capacity_kwh
-    # Charge to the target (usually full): the forecast PV is a *discount* on the
-    # energy the house would otherwise buy, not a reason to charge less. The
-    # battery's energy is needed in the evening, when the sun is gone.
-    charge_energy = needed_kwh
     available_kwh = max(0.0, (soc - min_soc) / 100.0 * capacity_kwh)
     export_cap_kwh: float | None = None
     if export_hours is not None and float(export_hours) > 0:
         export_cap_kwh = discharge_power_kw * float(export_hours)
     discharge_energy = (
-        available_kwh
-        if export_cap_kwh is None
-        else min(available_kwh, export_cap_kwh)
-    )
-
-    n_charge = (
-        min(len(future), math.ceil(charge_energy / charge_per_slot))
-        if charge_energy > 0
-        else 0
-    )
-    n_discharge = (
-        min(len(future), math.ceil(discharge_energy / discharge_per_slot))
-        if discharge_energy > 0
-        else 0
+        available_kwh if export_cap_kwh is None else min(available_kwh, export_cap_kwh)
     )
 
     budget = max(1, int(max_windows))
@@ -318,26 +306,107 @@ def build_plan(
 
     indexed = list(enumerate(future))
 
-    charge_idx = _select_indices(indexed, n_charge, cheapest=True)
-    charge_runs = _merge_runs(_group_runs(charge_idx), charge_windows) if charge_windows else []
+    # -- charge: the cheapest quarter hours, sized so the battery really reaches
+    # the target. The drain between now and the charge window, the drain during
+    # charging and the round-trip losses are charged back too, so a battery that
+    # is low in the early morning is filled all the way up before the day starts.
+    charge_idx: list[int] = []
+    charge_avg = 0.0
+    reference_avg = 0.0
+    skipped_charge = False
+    net_charge_kw = charge_power_kw * rte - standby_kw
+    if soc < target_soc and net_charge_kw > 0 and capacity_kwh > 0:
+        n_charge = min(
+            len(future),
+            math.ceil(
+                (target_soc - soc)
+                / 100.0
+                * capacity_kwh
+                / max(0.1, charge_power_kw * rte * slot_hours)
+            ),
+        )
+        for _ in range(16):
+            if n_charge <= 0:
+                break
+            candidate = _select_indices(indexed, n_charge, cheapest=True)
+            start_slot = future[min(candidate)].time
+            pre_hours = max(0.0, (start_slot - now).total_seconds() / 3600.0)
+            soc_start = min(
+                target_soc,
+                max(min_soc, soc - standby_kw * pre_hours / capacity_kwh * 100.0),
+            )
+            stored_needed = (target_soc - soc_start) / 100.0 * capacity_kwh
+            n_new = min(
+                len(future),
+                max(0, math.ceil(stored_needed / net_charge_kw / slot_hours)),
+            )
+            if n_new == n_charge:
+                break
+            n_charge = n_new
+        if n_charge > 0:
+            charge_idx = _select_indices(indexed, n_charge, cheapest=True)
+            charge_avg = sum(future[i].price for i in charge_idx) / len(charge_idx)
+            used = set(charge_idx)
+            rest = [(i, slot) for i, slot in indexed if i not in used]
+            reference = _select_indices(rest, len(charge_idx), cheapest=False)
+            reference_avg = (
+                sum(future[i].price for i in reference) / len(reference)
+                if reference
+                else charge_avg
+            )
+            # A kWh from the grid is about 1/RTE more expensive once the losses
+            # are counted, so only charge when the cheap hours still beat the
+            # price we would pay later. Otherwise the battery stays as it is.
+            # With no losses (RTE 100%) charging is never harmful, so the gate
+            # is skipped and the historical behaviour is kept.
+            if rte < 1.0 and charge_avg >= rte * reference_avg:
+                charge_idx = []
+                skipped_charge = True
+
+    charge_runs = (
+        _merge_runs(_group_runs(charge_idx), charge_windows)
+        if charge_idx and charge_windows
+        else []
+    )
 
     used = set(charge_idx)
     remaining = [(index, slot) for index, slot in indexed if index not in used]
+    n_discharge = (
+        min(len(remaining), math.ceil(discharge_energy / discharge_per_slot))
+        if discharge_energy > 0
+        else 0
+    )
     discharge_idx = _select_indices(remaining, n_discharge, cheapest=False)
     discharge_runs = (
         _merge_runs(_group_runs(discharge_idx), discharge_windows)
-        if discharge_windows
+        if discharge_idx and discharge_windows
         else []
     )
 
     # -- reasoning ---------------------------------------------------------
     notes: list[str] = []
-    if needed_kwh > 0:
+    if skipped_charge:
         notes.append(
-            f"Batterij {soc:.0f}% \u2192 doel {target_soc:.0f}% = {needed_kwh:.1f} kWh."
+            f"Overnacht laden overgeslagen: de goedkoopste uren (gemiddeld "
+            f"\u20ac{charge_avg:.3f}/kWh) zijn, met de laad-/ontlaadverliezen "
+            f"(RTE {rte * 100:.0f}%), niet goedkoper dan het duurste uur "
+            f"(gemiddeld \u20ac{reference_avg:.3f}/kWh)."
+        )
+    elif soc >= target_soc:
+        notes.append(f"Batterij staat al op het doel ({soc:.0f}%).")
+    elif charge_idx:
+        charged_kwh = len(charge_idx) * charge_power_kw * slot_hours
+        notes.append(
+            f"Batterij {soc:.0f}% \u2192 doel {target_soc:.0f}%. Met het verbruik "
+            f"van {standby_kw:.1f} kW tot en tijdens de laaduren en de "
+            f"laadverliezen (RTE {rte * 100:.0f}%) is ongeveer "
+            f"{charged_kwh:.1f} kWh nodig."
         )
     else:
-        notes.append(f"Batterij staat al op het doel ({soc:.0f}%).")
+        notes.append(
+            f"Batterij {soc:.0f}%; er zijn nu geen goedkope uren om naar het doel "
+            f"{target_soc:.0f}% te laden."
+        )
     if pv_credit_kwh > 0:
         notes.append(
             f"PV-prognose levert nog {pv_credit_kwh:.1f} kWh voor niets. Dat verlaagt "
@@ -384,8 +453,9 @@ def build_plan(
                     text=(
                         f"Goedkoopste {stats['minutes']:.0f} min van de komende periode "
                         f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
-                        f"{power_kw:.0f} kW laad je hier {stats['energy_kwh']:.1f} kWh "
-                        "in de batterij."
+                        f"{power_kw:.0f} kW laad je hier "
+                        f"{stats['energy_kwh'] * rte:.1f} kWh in de batterij "
+                        f"(RTE {rte * 100:.0f}%)."
                     ),
                 )
             )
@@ -445,6 +515,7 @@ def plan_windows(
         pv_credit_kwh=pv_credit_kwh,
         standby_kw=0.0,
         export_hours=None,
+        rte=1.0,
         max_windows=max_windows,
         charge_windows=charge_windows,
         discharge_windows=discharge_windows,
@@ -503,16 +574,19 @@ def forecast_soc(
     step_minutes: int = SLOT_MINUTES,
     min_soc: float = 0.0,
     max_soc: float = 100.0,
+    rte: float = DEFAULT_RTE,
 ) -> list[tuple[dt.datetime, float]]:
     """Project the battery state of charge if ``windows`` are followed.
 
     Walks from ``start`` to ``end`` in ``step_minutes`` steps. For every step the
     energy each active window moves is added: a charge window raises the state of
     charge, a discharge window lowers it (the power percentage is a fraction of
-    the matching power). ``base_load_kw`` is the house's standby consumption,
-    which the battery also covers, so it lowers the state of charge in every
-    step. The result is clamped to ``[min_soc, max_soc]``. Returns
-    ``(moment, soc)`` pairs, including the value at ``start``.
+    the matching power). ``rte`` is the round-trip efficiency, applied when
+    charging, so only ``rte`` of the energy taken from the grid lands in the
+    battery. ``base_load_kw`` is the house's standby consumption, which the
+    battery also covers, so it lowers the state of charge in every step. The
+    result is clamped to ``[min_soc, max_soc]``. Returns ``(moment, soc)`` pairs,
+    including the value at ``start``.
 
     Pure (no Home Assistant imports), so the card's forecast is easy to test.
     Windows are day-local, so a window never crosses midnight.
@@ -524,6 +598,7 @@ def forecast_soc(
         power_kw if discharge_power_kw is None else max(0.0, float(discharge_power_kw))
     )
     base_load_kw = max(0.0, float(base_load_kw))
+    rte = min(1.0, max(0.1, float(rte)))
     step = dt.timedelta(minutes=max(1, int(step_minutes)))
 
     current = min(max_soc, max(min_soc, float(soc)))
@@ -547,7 +622,7 @@ def forecast_soc(
                 continue
             overlap_hours = (overlap_stop - overlap_start).total_seconds() / 3600.0
             if window.mode == "charge":
-                energy_kwh = window.power / 100.0 * charge_kw * overlap_hours
+                energy_kwh = window.power / 100.0 * charge_kw * rte * overlap_hours
             elif window.mode == "discharge":
                 energy_kwh = -window.power / 100.0 * discharge_kw * overlap_hours
             else:

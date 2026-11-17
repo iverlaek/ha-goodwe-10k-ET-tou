@@ -36,7 +36,8 @@
           "export_hours": "Max export duration at full power (hours)",
           "target_soc": "Target state of charge (%)",
           "min_soc": "Minimum state of charge (%)",
-          "pv_factor": "PV credit factor (0-1)"
+          "pv_factor": "PV credit factor (0-1)",
+          "rte": "Battery round-trip efficiency (0.1-1)"
         }
       }
     }

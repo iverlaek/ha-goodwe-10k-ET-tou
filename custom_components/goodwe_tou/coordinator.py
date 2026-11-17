@@ -34,6 +34,7 @@ from .const import (
     CONF_PRICE_ENTITY,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
+    CONF_RTE,
     CONF_SCAN_INTERVAL,
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_PRICE_ENTITY,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
+    DEFAULT_RTE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SOC_ENTITY,
     DEFAULT_STANDBY_KW,
@@ -525,6 +527,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
         pv_factor = float(setting(CONF_PV_FACTOR, DEFAULT_PV_FACTOR))
+        rte = float(setting(CONF_RTE, DEFAULT_RTE))
 
         slots = self._price_slots(price_entity)
         soc = self._float_state(soc_entity, target_soc)
@@ -543,6 +546,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_credit_kwh=pv_remaining * pv_factor,
             standby_kw=standby_kw,
             export_hours=None if export_hours is None else float(export_hours),
+            rte=rte,
         )
 
     async def async_calculate_cheapest_hours(
@@ -580,6 +584,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         standby_kw = float(setting(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
+        rte = float(setting(CONF_RTE, DEFAULT_RTE))
 
         soc = self._float_state(soc_entity, target_soc)
         windows = list(self.data["windows"].values())
@@ -598,6 +603,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             discharge_power_kw=discharge_kw,
             base_load_kw=standby_kw,
             min_soc=min_soc,
+            rte=rte,
         )
 
     async def async_set_cheapest_hours(
