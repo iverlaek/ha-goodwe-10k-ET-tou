@@ -44,7 +44,6 @@ from .const import (
     DEFAULT_DISCHARGE_KW,
     DEFAULT_EXPORT_HOURS,
     DEFAULT_MIN_SOC,
-    DEFAULT_POWER_KW,
     DEFAULT_PRICE_ENTITY,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
@@ -439,6 +438,31 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _option(self, key: str, default: Any) -> Any:
         return self.config_entry.options.get(key, default)
 
+    def _power_settings(
+        self, overrides: Mapping[str, Any]
+    ) -> tuple[float, float]:
+        """Charge and discharge power, honouring an explicitly set legacy power.
+
+        ``power_kw`` predates the separate ``charge_kw``/``discharge_kw`` and is
+        only used as the fallback for both when the user actually set it (in the
+        options or in the service call); otherwise the GoodWe's own limits apply.
+        """
+
+        def setting(key: str, default: Any) -> Any:
+            if key in overrides and overrides[key] is not None:
+                return overrides[key]
+            return self._option(key, default)
+
+        legacy = setting(CONF_POWER_KW, None)
+        charge_default = float(legacy) if legacy is not None else DEFAULT_CHARGE_KW
+        discharge_default = (
+            float(legacy) if legacy is not None else DEFAULT_DISCHARGE_KW
+        )
+        return (
+            float(setting(CONF_CHARGE_KW, charge_default)),
+            float(setting(CONF_DISCHARGE_KW, discharge_default)),
+        )
+
     def _state(self, entity_id: str) -> State | None:
         return self.hass.states.get(entity_id) if entity_id else None
 
@@ -495,11 +519,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
         pv_entity = setting(CONF_PV_ENTITY, DEFAULT_PV_ENTITY)
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
-        legacy_kw = float(setting(CONF_POWER_KW, DEFAULT_POWER_KW))
-        charge_kw = float(setting(CONF_CHARGE_KW, legacy_kw or DEFAULT_CHARGE_KW))
-        discharge_kw = float(
-            setting(CONF_DISCHARGE_KW, legacy_kw or DEFAULT_DISCHARGE_KW)
-        )
+        charge_kw, discharge_kw = self._power_settings(overrides)
         standby_kw = float(setting(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
         export_hours = setting(CONF_EXPORT_HOURS, DEFAULT_EXPORT_HOURS)
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
@@ -556,11 +576,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
-        legacy_kw = float(setting(CONF_POWER_KW, DEFAULT_POWER_KW))
-        charge_kw = float(setting(CONF_CHARGE_KW, legacy_kw or DEFAULT_CHARGE_KW))
-        discharge_kw = float(
-            setting(CONF_DISCHARGE_KW, legacy_kw or DEFAULT_DISCHARGE_KW)
-        )
+        charge_kw, discharge_kw = self._power_settings(overrides)
         standby_kw = float(setting(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
@@ -578,7 +594,6 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             end,
             soc=soc,
             capacity_kwh=capacity_kwh,
-            power_kw=legacy_kw,
             charge_power_kw=charge_kw,
             discharge_power_kw=discharge_kw,
             base_load_kw=standby_kw,

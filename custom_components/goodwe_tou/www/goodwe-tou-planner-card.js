@@ -49,7 +49,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.6.0";
+const CARD_VERSION = "0.6.1";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];

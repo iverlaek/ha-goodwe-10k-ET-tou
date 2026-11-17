@@ -642,6 +642,12 @@ async def test_calculate_cheapest_hours_returns_reasons(
     assert response["summary"]
     # The PV forecast is reported as a discount, not a reduction of the charge.
     assert any("PV-prognose" in note for note in response["notes"])
+    # The GoodWe charges at 6 kW by default (the legacy power_kw is not set).
+    charge_texts = [
+        reason["text"] for reason in response["reasons"] if reason["mode"] == "charge"
+    ]
+    assert charge_texts
+    assert all("6 kW" in text for text in charge_texts)
 
 
 @pytest.mark.asyncio
