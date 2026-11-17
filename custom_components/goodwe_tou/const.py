@@ -43,6 +43,8 @@ CONF_WINDOW_POWER: Final = "window_power"
 CONF_RECHECK_MINUTES: Final = "recheck_minutes"
 CONF_LOG_SIZE: Final = "log_size"
 CONF_MIN_CELL_VOLTAGE: Final = "min_cell_voltage"
+CONF_TIBBER_PRICES: Final = "tibber_prices"
+CONF_TIBBER_HOME: Final = "tibber_home"
 
 DEFAULT_PRICE_ENTITY: Final = "sensor.average_electricity_price"
 DEFAULT_SOC_ENTITY: Final = "sensor.battery_state_of_charge"
@@ -86,6 +88,11 @@ MAX_LOG_SIZE: Final = 10000
 #: Minimum cell voltage (mV) that stops the automation. The state of charge is
 #: often unreliable, so a cell near empty is the real "battery is flat" signal.
 DEFAULT_MIN_CELL_VOLTAGE: Final = 3000
+#: Expose the Tibber day-ahead prices as a sensor (for the price card). Enabled by
+#: default; the sensor simply stays empty when the Tibber integration is absent.
+DEFAULT_TIBBER_PRICES: Final = True
+#: Which Tibber home to read when the account has more than one; empty = the first.
+DEFAULT_TIBBER_HOME: Final = ""
 
 # Price slots are 15 minutes in the ENTSO-e attribute.
 SLOT_MINUTES: Final = 15

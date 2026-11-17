@@ -22,6 +22,49 @@ views:
         title: Laadplanning
         price_entity: sensor.average_electricity_price
 
+      # Day-ahead price card, fed by the integration's Tibber price sensor.
+      # Needs the HACS "apexcharts-card" frontend card.
+      - type: custom:apexcharts-card
+        graph_span: 2d
+        span:
+          start: day
+        now:
+          show: true
+          label: nu
+        header:
+          show: true
+          show_states: true
+          colorize_states: true
+          title: Stroomprijs vandaag & morgen (€/kWh)
+        update_interval: 5m
+        yaxis:
+          - id: Prijs
+            decimals: 2
+        series:
+          - entity: sensor.goodwe_time_of_use_stroomprijzen
+            name: Tibber
+            type: column
+            float_precision: 3
+            opacity: 1
+            stroke_width: 2
+            color_threshold:
+              - value: -0.1
+                color: "#000fff"
+              - value: 0
+                color: "#00ffd5"
+              - value: 0.1
+                color: "#ff8000"
+              - value: 0.2
+                color: "#0080ff"
+              - value: 0.3
+                color: "#ff2a00"
+              - value: 1
+                color: "#ff00d4"
+            data_generator: |
+              return entity.attributes.prices.map((record) => {
+                return [new Date(record.time).getTime(), record.price];
+              });
+
       - type: custom:goodwe-tou-log-card
         title: Logboek
 

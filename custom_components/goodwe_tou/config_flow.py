@@ -37,6 +37,8 @@ from .const import (
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
+    CONF_TIBBER_HOME,
+    CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_CHARGE_KW,
@@ -61,6 +63,8 @@ from .const import (
     DEFAULT_SOC_ENTITY,
     DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
+    DEFAULT_TIBBER_HOME,
+    DEFAULT_TIBBER_PRICES,
     DEFAULT_TIMEOUT,
     DEFAULT_WINDOW_POWER,
     DOMAIN,
@@ -224,6 +228,14 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_MIN_CELL_VOLTAGE,
                     default=default(CONF_MIN_CELL_VOLTAGE, DEFAULT_MIN_CELL_VOLTAGE),
                 ): vol.All(int, vol.Range(min=0, max=4000)),
+                vol.Optional(
+                    CONF_TIBBER_PRICES,
+                    default=default(CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES),
+                ): bool,
+                vol.Optional(
+                    CONF_TIBBER_HOME,
+                    default=default(CONF_TIBBER_HOME, DEFAULT_TIBBER_HOME),
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

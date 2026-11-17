@@ -39,15 +39,19 @@ from .const import (
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
+    CONF_TIBBER_HOME,
+    CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
     DEFAULT_COMM_ADDR,
     DEFAULT_PORT,
     DEFAULT_RECHECK_MINUTES,
     DEFAULT_RETRIES,
+    DEFAULT_TIBBER_HOME,
+    DEFAULT_TIBBER_PRICES,
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
-from .coordinator import GoodweTouCoordinator, window_to_dict
+from .coordinator import GoodweTouCoordinator, TibberPriceCoordinator, window_to_dict
 from .goodwe_udp import GoodweUdpClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -244,6 +248,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_load_activity()
     await coordinator.async_config_entry_first_refresh()
 
+    # The Tibber price sensor has its own 15-minute coordinator so the price card
+    # keeps working when the inverter is unreachable, and so the cloud is not hit
+    # on every poll. It is only created when the user asked for it; the first
+    # fetch never fails setup (a missing Tibber just leaves the sensor empty).
+    if entry.options.get(CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES):
+        coordinator.price_coordinator = TibberPriceCoordinator(
+            hass,
+            home=str(entry.options.get(CONF_TIBBER_HOME, DEFAULT_TIBBER_HOME) or ""),
+        )
+
     # The GoodWe blocks all export when its Feed Power limit is 0, which silently
     # stops the discharge windows. Push the configured limit on every start and
     # options change, but never let a failure keep the integration from loading.
@@ -254,6 +268,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    if coordinator.price_coordinator is not None:
+        try:
+            await coordinator.price_coordinator.async_refresh()
+        except Exception:  # pragma: no cover - never let prices block setup
+            _LOGGER.warning("Could not fetch the Tibber prices", exc_info=True)
 
     await _async_register_frontend(hass)
     _async_register_services(hass)
@@ -277,8 +297,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        prices = getattr(coordinator, "price_coordinator", None)
+        if prices is not None:
+            await prices.async_shutdown()
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
 

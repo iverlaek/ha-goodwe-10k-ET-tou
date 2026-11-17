@@ -89,6 +89,7 @@ from .optimizer import (
     slots_from_prices,
     windows_cost,
 )
+from .prices import TIBBER_DOMAIN, TIBBER_SERVICE, tibber_prices
 from .registers import TouWindow, base_for, decode_window, valid_block, window_registers
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,6 +110,57 @@ def window_to_dict(window: TouWindow) -> dict[str, Any]:
         "mode": window.mode,
         "enabled": window.enabled,
     }
+
+
+class TibberPriceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Fetch the Tibber day-ahead prices for the price card.
+
+    Tibber has no sensor that exposes the full price list, only the current price
+    and a few statistics. The ``tibber.get_prices`` service does return every
+    quarter-hour price for today and tomorrow, so this small coordinator calls it
+    on its own 15-minute schedule. It is deliberately separate from the inverter
+    coordinator: the price card must keep working even when the flaky dongle is
+    unreachable, and there is no reason to hit the Tibber cloud on every poll.
+    """
+
+    def __init__(self, hass: HomeAssistant, home: str = "") -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_prices",
+            update_interval=dt.timedelta(minutes=15),
+        )
+        self.home = home
+        self.data = {"prices": [], "home": None, "updated": None}
+
+    @property
+    def service_available(self) -> bool:
+        """Whether the Tibber integration is loaded and offers its price service."""
+        return self.hass.services.has_service(TIBBER_DOMAIN, TIBBER_SERVICE)
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        if not self.service_available:
+            # No Tibber: keep whatever we have (usually nothing) without errors.
+            return self.data
+        now = dt.datetime.now(dt.UTC).astimezone()
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + dt.timedelta(days=2)
+        try:
+            response = await self.hass.services.async_call(
+                TIBBER_DOMAIN,
+                TIBBER_SERVICE,
+                {"start": start.isoformat(), "end": end.isoformat()},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception:  # pragma: no cover - cloud hiccups must not break setup
+            _LOGGER.warning("Could not fetch the Tibber prices", exc_info=True)
+            return self.data
+        records, home = tibber_prices(response, self.home)
+        if not records:
+            _LOGGER.debug("Tibber returned no usable prices")
+            return self.data
+        return {"prices": records, "home": home, "updated": now.isoformat()}
 
 
 class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -143,6 +195,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.auto_replan_enabled: bool = bool(
             entry.options.get(CONF_AUTO_REPLAN, DEFAULT_AUTO_REPLAN)
         )
+        #: Optional Tibber price coordinator backing the price sensor.
+        self.price_coordinator: TibberPriceCoordinator | None = None
 
     # -- activity log ------------------------------------------------------
 

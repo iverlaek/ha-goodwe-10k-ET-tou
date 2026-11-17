@@ -1,17 +1,21 @@
-"""Sensor entity: the activity log of writes sent to the inverter."""
+"""Sensor entities: the activity log, the lowest cell voltage and Tibber prices."""
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-from .coordinator import GoodweTouCoordinator
+from .const import DOMAIN, MANUFACTURER, MODEL
+from .coordinator import GoodweTouCoordinator, TibberPriceCoordinator
 from .entity import GoodweTouEntity
+from .prices import current_price
 
 # Keep the state attributes comfortably under Home Assistant's 16 KB limit; the
 # full log (up to 1000 entries) is available through ``goodwe_tou.get_activity``.
@@ -24,9 +28,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: GoodweTouCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [TouActivitySensor(coordinator), TouCellVoltageSensor(coordinator)]
-    )
+    entities: list[SensorEntity] = [
+        TouActivitySensor(coordinator),
+        TouCellVoltageSensor(coordinator),
+    ]
+    if coordinator.price_coordinator is not None:
+        entities.append(TouPricesSensor(coordinator, coordinator.price_coordinator))
+    async_add_entities(entities)
 
 
 class TouActivitySensor(GoodweTouEntity, SensorEntity):
@@ -82,3 +90,54 @@ class TouCellVoltageSensor(GoodweTouEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"threshold": self.coordinator.min_cell_voltage_threshold}
+
+
+class TouPricesSensor(CoordinatorEntity[TibberPriceCoordinator], SensorEntity):
+    """The Tibber day-ahead prices, with the full list as a ``prices`` attribute.
+
+    The state is the price of the quarter hour that is running now; ``prices``
+    holds every slot for today and tomorrow as ``{time, price}`` records, which is
+    the same shape the ENTSO-e/Nordpool sensors use and which the price graph
+    draws. The list is fetched through the ``tibber.get_prices`` service by the
+    dedicated :class:`~.coordinator.TibberPriceCoordinator`.
+    """
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:currency-eur"
+    _attr_native_unit_of_measurement = "EUR/kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    # The full two-day list is large and only needed live by the price card, so it
+    # is kept out of the recorder database.
+    _unrecorded_attributes = frozenset({"prices"})
+
+    def __init__(
+        self,
+        coordinator: GoodweTouCoordinator,
+        prices: TibberPriceCoordinator,
+    ) -> None:
+        super().__init__(prices)
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_tibber_prices"
+        self._attr_name = "Stroomprijzen"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.config_entry.entry_id)},
+            name="GoodWe Time-of-Use",
+            manufacturer=MANUFACTURER,
+            model=MODEL,
+            configuration_url=f"http://{coordinator.client.host}",
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        now = dt.datetime.now(dt.UTC).astimezone()
+        return current_price(data.get("prices", []), now)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {
+            "prices": data.get("prices", []),
+            "home": data.get("home"),
+            "updated": data.get("updated"),
+        }

@@ -96,7 +96,10 @@ The flow probes the inverter before creating the entry, so a wrong host or a
 dongle that is offline is reported immediately.
 
 The poll interval (seconds, `0` to disable polling) can be changed in the
-integration **Configure** dialog.
+integration **Configure** dialog. The same dialog holds the planner's boundary
+conditions (see [Cheapest hours](#cheapest-hours)) and the Tibber price sensor
+(`tibber_prices`, on by default; `tibber_home` when your account has several
+homes).
 
 ## Entities
 
@@ -114,6 +117,7 @@ With the default device name the entities are:
 | `button.goodwe_time_of_use_apply_to_inverter` | Apply the schedule to the inverter (verified) |
 | `button.goodwe_time_of_use_set_cheapest_hours` | Plan + apply the cheapest hours |
 | `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
+| `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
 device. Always pick entities from the UI rather than hard-coding the IDs above.
@@ -215,6 +219,57 @@ prefix: goodwe_time_of_use                           # optional
 price_entity: sensor.average_electricity_price       # optional, for the price bars
 slot_minutes: 15                                     # optional, timeline granularity
 ```
+
+## The price card
+
+`custom:goodwe-tou-planner-card` draws its own compact price strip, but for a
+clearer two-day overview the integration also exposes the **Tibber** day-ahead
+prices as a sensor so you can drop the familiar *Stroomprijs vandaag & morgen*
+card next to the planner:
+
+- `sensor.goodwe_time_of_use_stroomprijzen` — state is the price of the quarter
+  hour that is running now (`EUR/kWh`); the `prices` attribute holds **every**
+  slot for today and tomorrow as `{time, price}` records, the same shape the
+  ENTSO-e/Nordpool sensors use;
+- the values come from Tibber's `tibber.get_prices` service (all-in €/kWh), which
+  the integration refreshes every 15 minutes on its own. No YAML, template or
+  token is needed. When Tibber is not installed the sensor simply stays empty.
+
+A ready-made card for the HACS [`apexcharts-card`](https://github.com/RomRider/apexcharts-card)
+frontend (the same style as the start dashboard) is included in the example
+dashboard:
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 2d
+span:
+  start: day
+now:
+  show: true
+  label: nu
+header:
+  show: true
+  show_states: true
+  colorize_states: true
+  title: Stroomprijs vandaag & morgen (€/kWh)
+update_interval: 5m
+yaxis:
+  - id: Prijs
+    decimals: 2
+series:
+  - entity: sensor.goodwe_time_of_use_stroomprijzen
+    name: Tibber
+    type: column
+    float_precision: 3
+    data_generator: |
+      return entity.attributes.prices.map((record) => {
+        return [new Date(record.time).getTime(), record.price];
+      });
+```
+
+The planner is untouched: it keeps using `price_entity` (ENTSO-e/Nordpool by
+default). You *can* point `price_entity` at the Tibber sensor as well, because
+`prices` uses the same `{time, price}` format.
 
 ## The log card
 

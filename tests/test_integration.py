@@ -25,6 +25,7 @@ from custom_components.goodwe_tou.const import (
     CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
     CONF_RECHECK_MINUTES,
+    CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
     DOMAIN,
 )
@@ -1108,6 +1109,75 @@ async def test_planner_can_leave_windows_unused(hass: HomeAssistant, store: list
     coordinator = hass.data[DOMAIN][entry.entry_id]
     plan = coordinator._plan_cheapest_hours()
     assert plan.windows == []
+
+
+@pytest.mark.asyncio
+async def test_tibber_price_sensor_exposes_the_price_list(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The price sensor turns tibber.get_prices into a {time, price} list."""
+    from homeassistant.core import SupportsResponse
+
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    records = [
+        {
+            "start_time": (base + dt.timedelta(minutes=15 * i)).isoformat(),
+            "price": 0.30 + i / 1000.0,
+        }
+        for i in range(8)
+    ]
+
+    async def _get_prices(call):
+        # The sensor asks for a window that covers today and tomorrow.
+        assert call.data["start"] and call.data["end"]
+        return {"prices": {"akkerv5": records}}
+
+    hass.services.async_register(
+        "tibber", "get_prices", _get_prices, supports_response=SupportsResponse.ONLY
+    )
+
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_stroomprijzen")
+    assert sensor is not None
+    # The state is the price of the quarter hour that is running now.
+    assert sensor.state == "0.3"
+    assert sensor.attributes["unit_of_measurement"] == "EUR/kWh"
+    assert sensor.attributes["home"] == "akkerv5"
+    assert len(sensor.attributes["prices"]) == 8
+    assert sensor.attributes["prices"][0] == {
+        "time": base.isoformat(),
+        "price": 0.30,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tibber_price_sensor_without_tibber(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """Without the Tibber service the sensor exists but has nothing to show."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_stroomprijzen")
+    assert sensor is not None
+    assert sensor.state == "unknown"
+    assert sensor.attributes["prices"] == []
+
+
+@pytest.mark.asyncio
+async def test_tibber_price_sensor_can_be_disabled(hass: HomeAssistant, store: list[int]):
+    """The Tibber price sensor is optional; disabling it removes the entity."""
+    entry = _entry_with_options(hass, **{CONF_TIBBER_PRICES: False})
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.goodwe_time_of_use_stroomprijzen") is None
 
 
 @pytest.mark.asyncio
