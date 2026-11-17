@@ -68,6 +68,58 @@ def test_parse_exception_response():
         udp.GoodweUdpClient._parse(frame, udp.READ_CMD, 47515, 1)
 
 
+def _exception_frame(cmd: int, code: int) -> bytes:
+    body = bytes([ADDR, cmd | 0x80, code])
+    crc = udp.crc16(body)
+    return b"\xaa\x55" + body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+
+def test_parse_exception_bad_crc_is_ignored():
+    corrupt = bytearray(_exception_frame(udp.READ_CMD, 0x02))
+    corrupt[-1] ^= 0xFF
+    parsed, partial = udp.GoodweUdpClient._parse(
+        bytes(corrupt), udp.READ_CMD, 47515, 1
+    )
+    assert parsed is None
+    assert partial is False
+
+
+def test_parse_exception_fragment_is_partial():
+    frame = _exception_frame(udp.READ_CMD, 0x02)
+    parsed, partial = udp.GoodweUdpClient._parse(frame[:5], udp.READ_CMD, 47515, 1)
+    assert parsed is None
+    assert partial is True
+
+
+def test_parse_foreign_read_exception_does_not_fail_a_write():
+    # Another client's "illegal data address" (0x83) must not abort our write.
+    echo = (
+        bytes([udp.WRITE_CMD]) + (47529).to_bytes(2, "big") + (0xFF9C).to_bytes(2, "big")
+    )
+    frame, partial = udp.GoodweUdpClient._parse(
+        _exception_frame(udp.READ_CMD, 0x02) + _frame(echo),
+        udp.WRITE_CMD,
+        47529,
+        0xFF9C,
+    )
+    assert frame is not None
+    assert partial is False
+
+
+def test_parse_foreign_write_exception_is_skipped_when_our_echo_arrives():
+    echo = (
+        bytes([udp.WRITE_CMD]) + (47529).to_bytes(2, "big") + (0xFF9C).to_bytes(2, "big")
+    )
+    frame, partial = udp.GoodweUdpClient._parse(
+        _exception_frame(udp.WRITE_CMD, 0x03) + _frame(echo),
+        udp.WRITE_CMD,
+        47529,
+        0xFF9C,
+    )
+    assert frame is not None
+    assert partial is False
+
+
 def test_parse_write_echo():
     value = 0xFF9C
     payload = (

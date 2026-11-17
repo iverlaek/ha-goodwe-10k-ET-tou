@@ -28,8 +28,18 @@ automate them from scripts, automations and dashboards.
   state of charge and the PV forecast into account.
 - A **bundled Lovelace card** (`custom:goodwe-tou-card`) that shows all four
   windows in one tile with red↔green sliders and a *Cheapest hours* button.
+- A **planner card** (`custom:goodwe-tou-planner-card`) that lays the four
+  windows on a single *now → midnight tomorrow* timeline with draggable
+  charge/discharge bars. Tomorrow is greyed out until tomorrow's prices are
+  known, overlapping windows are impossible, and a window that crosses midnight
+  is split into two inverter windows on apply.
+- A `goodwe_tou.set_windows` service that writes an explicit plan (start, stop,
+  signed power, days) in a single verified request — used by the planner card.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
+- Robust against a dongle that is **shared** with another integration: reads
+  ignore foreign frames (two matching reads plus a structural check) and every
+  write is confirmed by reading it back, so a change cannot silently revert.
 
 ## Installation
 
@@ -118,6 +128,35 @@ prefix: goodwe_time_of_use       # optional entity-id prefix
 A ready-to-paste dashboard is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml).
 
+## The planner card
+
+`custom:goodwe-tou-planner-card` is a *planner* view for the same four windows.
+Instead of a fixed start/stop pair per window it draws one timeline that starts
+at the current quarter hour and ends at midnight at the end of tomorrow, and
+renders each window as a draggable bar on it:
+
+- drag the **left** and **right** handles to move a window's start and stop;
+- the **Laden / Ontladen** button toggles a window between charging and
+  discharging, `✕` turns it off, and the number next to it is the power
+  percentage;
+- the bars snap to quarter hours and **cannot overlap** — a handle stops at the
+  neighbouring window;
+- **tomorrow is greyed out** until the configured price entity exposes prices
+  for tomorrow (usually around 15:00);
+- **Goedkoopste uren** calls the integration's cheapest-hours planner;
+- **Toepassen** writes the whole plan at once through `goodwe_tou.set_windows`.
+  A bar that crosses midnight is split into two inverter windows (one ending at
+  `23:59`, one starting at `00:00`), because the inverter stores one window per
+  day.
+
+```yaml
+type: custom:goodwe-tou-planner-card
+title: Laadplanning                                  # optional
+prefix: goodwe_time_of_use                           # optional
+price_entity: sensor.average_electricity_price       # optional, for the grey-out
+slot_minutes: 15                                     # optional, timeline granularity
+```
+
 ## Cheapest hours
 
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
@@ -153,6 +192,30 @@ data:
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
 | `pv_factor` | `0.5` | Fraction of the PV forecast credited against grid charging |
+
+## Applying an explicit plan
+
+The `goodwe_tou.set_windows` service writes a list of windows in one verified
+request. It is what the planner card uses, and it is handy for automations that
+compute their own plan:
+
+```yaml
+action: goodwe_tou.set_windows
+data:
+  windows:
+    - start: "02:00"
+      stop: "05:00"
+      power: -80        # negative = charge
+      days: "mon"
+    - start: "18:30"
+      stop: "20:00"
+      power: 50         # positive = discharge
+      days: "mon"
+```
+
+`power` is a signed percentage (`-100` charge … `+100` discharge). `days` is
+optional and defaults to `all`. The list is padded to four windows — any window
+you leave out is turned off — and the result is verified by reading it back.
 
 ## Example: cheap-rate battery charging
 
@@ -209,8 +272,10 @@ day-mask encoding.
 
 - **Cannot connect.** Check the dongle IP, that it is reachable
   (`ping 192.168.20.13`) and that nothing else is holding the dongle. The dongle
-  only answers one request at a time; if the official GoodWe integration is also
-  polling it, expect occasional timeouts (the client retries automatically).
+  only answers one request at a time and cannot tell which client a reply belongs
+  to, so when the official GoodWe integration polls it at the same time you may
+  see occasional timeouts. The client retries automatically, ignores replies that
+  answer somebody else's request and confirms every write by reading it back.
 - **Writes seem to do nothing.** Time-of-Use only runs while the inverter is in
   ECO mode — make sure `switch.goodwe_time_of_use_eco_mode` is on
   (`work_mode = 3`).

@@ -45,9 +45,11 @@ PLATFORMS = [
 ]
 
 SERVICE_SET_CHEAPEST_HOURS = "set_cheapest_hours"
+SERVICE_SET_WINDOWS = "set_windows"
 
 _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
+_PLANNER_FILE = "goodwe-tou-planner-card.js"
 _FRONTEND_KEY = "__frontend__"
 
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
@@ -70,6 +72,26 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         vol.Optional(CONF_PV_FACTOR): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=1)
         ),
+    }
+)
+
+SERVICE_SET_WINDOWS_SCHEMA = vol.Schema(
+    {
+        vol.Required("windows"): vol.All(
+            cv.ensure_list,
+            [
+                vol.Schema(
+                    {
+                        vol.Required("start"): cv.time,
+                        vol.Required("stop"): cv.time,
+                        vol.Required("power"): vol.All(
+                            vol.Coerce(int), vol.Range(min=-100, max=100)
+                        ),
+                        vol.Optional("days"): cv.string,
+                    }
+                )
+            ],
+        )
     }
 )
 
@@ -100,6 +122,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             [StaticPathConfig(_URL_PATH, str(www_dir), cache_headers=False)]
         )
         add_extra_js_url(hass, f"{_URL_PATH}/{_CARD_FILE}")
+        add_extra_js_url(hass, f"{_URL_PATH}/{_PLANNER_FILE}")
     except Exception:
         _LOGGER.warning(
             "Could not register the GoodWe TOU Lovelace card", exc_info=True
@@ -143,20 +166,36 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 def _async_register_services(hass: HomeAssistant) -> None:
-    if hass.services.has_service(DOMAIN, SERVICE_SET_CHEAPEST_HOURS):
-        return
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_CHEAPEST_HOURS):
 
-    async def _handle_set_cheapest_hours(call: ServiceCall) -> None:
-        coordinators = _coordinators(hass)
-        if not coordinators:
-            _LOGGER.warning("No GoodWe Time-of-Use entry is loaded")
-            return
-        for coordinator in coordinators:
-            await coordinator.async_set_cheapest_hours(call.data)
+        async def _handle_set_cheapest_hours(call: ServiceCall) -> None:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                _LOGGER.warning("No GoodWe Time-of-Use entry is loaded")
+                return
+            for coordinator in coordinators:
+                await coordinator.async_set_cheapest_hours(call.data)
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SET_CHEAPEST_HOURS,
-        _handle_set_cheapest_hours,
-        schema=SERVICE_SET_CHEAPEST_HOURS_SCHEMA,
-    )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_CHEAPEST_HOURS,
+            _handle_set_cheapest_hours,
+            schema=SERVICE_SET_CHEAPEST_HOURS_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_WINDOWS):
+
+        async def _handle_set_windows(call: ServiceCall) -> None:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                _LOGGER.warning("No GoodWe Time-of-Use entry is loaded")
+                return
+            for coordinator in coordinators:
+                await coordinator.async_set_windows(call.data["windows"])
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_WINDOWS,
+            _handle_set_windows,
+            schema=SERVICE_SET_WINDOWS_SCHEMA,
+        )

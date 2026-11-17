@@ -13,8 +13,9 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
-      - type: custom:goodwe-tou-card
-        title: GoodWe Time-of-Use
+      - type: custom:goodwe-tou-planner-card
+        title: Laadplanning
+        price_entity: sensor.average_electricity_price
 
       - type: entities
         title: Status

@@ -213,9 +213,18 @@ class GoodweUdpClient:
             resp_cmd = chunk[3]
 
             if resp_cmd & 0x80:  # Modbus exception
+                # Exception frame: 0xAA 0x55 addr cmd|0x80 code crc_lo crc_hi.
+                if len(chunk) < 7:
+                    partial = True
+                    pos = start + 2
+                    continue
+                exc = chunk[:7]
+                if crc16(exc[2:5]) != int.from_bytes(exc[5:7], "little"):
+                    pos = start + 2
+                    continue
                 if resp_cmd == (cmd | 0x80):
-                    exception = chunk[4] if len(chunk) > 4 else 0
-                pos = start + 2
+                    exception = exc[4]
+                pos = start + 7
                 continue
 
             if resp_cmd == READ_CMD:

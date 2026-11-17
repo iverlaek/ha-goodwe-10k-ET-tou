@@ -81,3 +81,21 @@ set_cheapest_hours:
           min: 0
           max: 1
           step: 0.05
+
+set_windows:
+  name: Set windows
+  description: >-
+    Write an explicit list of Time-of-Use windows to the inverter. Each window
+    has a start and a stop time, a signed power percentage (negative charges,
+    positive discharges) and an optional set of days. The list is padded to
+    four windows and written with read-back verification. Used by the bundled
+    planner card.
+  fields:
+    windows:
+      name: Windows
+      description: >-
+        List of windows. Each item needs start and stop (HH:MM), power
+        (-100 charge .. +100 discharge) and may set days (for example "mon").
+      required: true
+      selector:
+        object:

@@ -41,6 +41,10 @@
     "set_cheapest_hours": {
       "name": "Set cheapest hours",
       "description": "Plan the four Time-of-Use windows from the price forecast: charge in the cheapest hours and discharge in the most expensive ones."
+    },
+    "set_windows": {
+      "name": "Set windows",
+      "description": "Write an explicit list of Time-of-Use windows to the inverter (start, stop, signed power and days)."
     }
   }
 }

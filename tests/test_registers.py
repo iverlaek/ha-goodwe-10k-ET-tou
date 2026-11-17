@@ -144,3 +144,51 @@ def test_base_for():
         47523,
         47527,
     ]
+
+
+def test_valid_block_accepts_well_formed_windows():
+    assert registers.valid_block(
+        [0x0400, 0x0600, 0xFF9C, 0xFF7F, 0x0C1E, 0x0F1E, 0xFFE2, 0x007F]
+        + [0x0A2D, 0x0D2D, 0x0000, 0x0020, 0x160F, 0x1700, 0x0000, 0x007F]
+    )
+    # a fully disabled / zeroed block is still structurally valid
+    assert registers.valid_block([0] * 16)
+
+
+def test_valid_block_rejects_foreign_data():
+    # Runtime block from the official integration: 0x1A0B is 26:11, not a time.
+    foreign = [
+        0x1A0B,
+        0x110B,
+        0x2935,
+        0x07AC,
+        0x0002,
+        0x0000,
+        0x0026,
+        0x0796,
+        0x0001,
+        0x0000,
+        0x0012,
+        0x0000,
+        0x0000,
+        0x0000,
+        0x0000,
+        0x0000,
+    ]
+    assert not registers.valid_block(foreign)
+
+
+def test_valid_block_rejects_bad_length_and_fields():
+    assert not registers.valid_block([0] * 15)
+    # minute out of range
+    assert not registers.valid_block(
+        [0x0460, 0x0600, 0xFF9C, 0xFF7F] + [0] * 12
+    )
+    # power out of range
+    assert not registers.valid_block(
+        [0x0400, 0x0600, 0x0064 + 1, 0xFF7F] + [0] * 12
+    )
+    # switch high byte neither 0x00 nor 0xFF
+    assert not registers.valid_block(
+        [0x0400, 0x0600, 0xFF9C, 0x017F] + [0] * 12
+    )

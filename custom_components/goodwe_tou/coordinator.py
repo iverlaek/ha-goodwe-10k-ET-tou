@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -39,15 +39,21 @@ from .const import (
     WINDOWS,
     WORK_MODE_REGISTER,
 )
-from .goodwe_udp import GoodweError, GoodweUdpClient
+from .goodwe_udp import (
+    GoodweError,
+    GoodweProtocolError,
+    GoodweRejectedError,
+    GoodweUdpClient,
+)
 from .optimizer import plan_registers, plan_windows, slots_from_prices
-from .registers import TouWindow, base_for, decode_window, window_registers
+from .registers import TouWindow, base_for, decode_window, valid_block, window_registers
 
 _LOGGER = logging.getLogger(__name__)
 
 _FIRST_BASE = base_for(1)
 _REGISTER_COUNT = 4 * len(WINDOWS)
 _APPLY_ATTEMPTS = 3
+_READ_ATTEMPTS = 3
 
 
 class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -75,15 +81,54 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._io_lock:
             return await self.hass.async_add_executor_job(func, *args)
 
+    def _read_block(
+        self,
+        offset: int,
+        count: int,
+        validate: Callable[[list[int]], bool] | None = None,
+    ) -> list[int]:
+        """Read a block from the shared dongle, ignoring foreign frames.
+
+        The dongle answers several clients on one bus and sometimes delivers a
+        frame that answers somebody else's request. A read response does not
+        echo the register it answers, so a block is only trusted once two
+        consecutive reads agree (and, when given, pass ``validate``). Modbus
+        exceptions that another client triggered are retried instead of being
+        blamed on us.
+        """
+        previous: list[int] | None = None
+        last_error: GoodweError | None = None
+        for _ in range(_READ_ATTEMPTS):
+            try:
+                registers = self.client.read_registers(offset, count)
+            except GoodweRejectedError as err:
+                # Usually another client probing an unsupported register.
+                last_error = err
+                previous = None
+                continue
+            if registers == previous and (validate is None or validate(registers)):
+                return registers
+            previous = registers
+        if previous is not None and (validate is None or validate(previous)):
+            _LOGGER.warning(
+                "No two matching reads at %s, using the last valid one", offset
+            )
+            return previous
+        if last_error is not None:
+            raise last_error
+        raise GoodweProtocolError(
+            f"could not read a consistent {count}-register block at {offset}"
+        )
+
     def _read_all(self) -> dict[str, Any]:
-        registers = self.client.read_registers(_FIRST_BASE, _REGISTER_COUNT)
+        registers = self._read_block(_FIRST_BASE, _REGISTER_COUNT, valid_block)
         windows: dict[int, TouWindow] = {}
         for number in WINDOWS:
             offset = base_for(number) - _FIRST_BASE
             windows[number] = decode_window(
                 base_for(number), registers[offset : offset + 4]
             )
-        work_mode = self.client.read_registers(WORK_MODE_REGISTER, 1)[0]
+        work_mode = self._read_block(WORK_MODE_REGISTER, 1)[0]
         return {"windows": windows, "work_mode": work_mode}
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -112,6 +157,39 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 mapping[base_for(number) + relative] = value
         return mapping
 
+    async def _write_verified(self, mapping: Mapping[int, int]) -> None:
+        """Write registers, then read the schedule back and confirm them.
+
+        The dongle is flaky and shared, so a write is only believed once the
+        inverter reads the intended value back. This is what makes a single
+        entity change *stick* instead of silently reverting on the next poll.
+        """
+        last: dict[str, Any] | None = None
+        for attempt in range(1, _APPLY_ATTEMPTS + 1):
+            await self._write(mapping)
+            try:
+                last = await self._call(self._read_all)
+            except GoodweError as err:
+                raise HomeAssistantError(f"Could not verify the write: {err}") from err
+            actual = self._registers_for(last["windows"])
+            actual[WORK_MODE_REGISTER] = last["work_mode"]
+            if all(actual.get(register) == value for register, value in mapping.items()):
+                self.async_set_updated_data(last)
+                return
+            _LOGGER.warning(
+                "Write verification attempt %s/%s did not match, retrying",
+                attempt,
+                _APPLY_ATTEMPTS,
+            )
+
+        if last is not None:
+            self.async_set_updated_data(last)
+        raise HomeAssistantError(
+            "The inverter did not accept the change (read-back mismatch after "
+            f"{_APPLY_ATTEMPTS} attempts). Another integration may be polling the "
+            "dongle at the same time."
+        )
+
     # -- public operations -------------------------------------------------
 
     async def async_read(self) -> None:
@@ -125,38 +203,34 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_set_updated_data(data)
 
     async def async_apply(self) -> None:
-        """Write every window to the inverter and verify the result.
-
-        The dongle is flaky and another integration may be polling it at the
-        same time, so the write is retried until a read-back matches what we
-        intended to write.
-        """
+        """Write every window to the inverter and verify the result."""
         windows = {number: self._window(number) for number in WINDOWS}
-        mapping = self._registers_for(windows)
+        await self._write_verified(self._registers_for(windows))
 
-        last: dict[str, Any] | None = None
-        for attempt in range(1, _APPLY_ATTEMPTS + 1):
-            await self._write(mapping)
-            try:
-                last = await self._call(self._read_all)
-            except GoodweError as err:
-                raise HomeAssistantError(f"Could not verify the write: {err}") from err
-            if self._registers_for(last["windows"]) == mapping:
-                self.async_set_updated_data(last)
-                return
-            _LOGGER.warning(
-                "Apply verification attempt %s/%s did not match, retrying",
-                attempt,
-                _APPLY_ATTEMPTS,
+    async def async_set_windows(
+        self, windows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Write an explicit set of windows to the inverter.
+
+        Each item is a mapping with ``start`` and ``stop`` (:class:`datetime.time`),
+        a signed ``power`` percentage (negative charges) and an optional ``days``
+        string. The list is padded to four windows and written with read-back
+        verification, so a dashboard can apply a whole plan in one request
+        instead of one write per entity.
+        """
+        plan: list[TouWindow] = []
+        for item in windows:
+            plan.append(
+                TouWindow.from_signed_power(
+                    start=item["start"],
+                    stop=item["stop"],
+                    signed_power=int(item["power"]),
+                    days=str(item.get("days") or "all"),
+                )
             )
-
-        if last is not None:
-            self.async_set_updated_data(last)
-        raise HomeAssistantError(
-            "The inverter did not accept the schedule (read-back mismatch after "
-            f"{_APPLY_ATTEMPTS} attempts). Another integration may be polling the "
-            "dongle at the same time."
-        )
+        plan = plan_registers(plan)
+        mapping = self._registers_for(dict(zip(WINDOWS, plan, strict=True)))
+        await self._write_verified(mapping)
 
     async def async_set_window_time(
         self, number: int, kind: str, value: dt.time
@@ -164,11 +238,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         window = self._window(number)
         updated = replace(window, **{kind: value})
         relative = 0 if kind == "start" else 1
-        await self._write(
+        await self._write_verified(
             {base_for(number) + relative: window_registers(updated)[relative]}
         )
-        self.data["windows"][number] = updated
-        self.async_set_updated_data(self.data)
 
     async def async_set_window_power(self, number: int, signed_power: int) -> None:
         """Set the signed power (negative charges, positive discharges)."""
@@ -180,25 +252,19 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             days=window.days,
         )
         registers = window_registers(updated)
-        await self._write(
+        await self._write_verified(
             {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
         )
-        self.data["windows"][number] = updated
-        self.async_set_updated_data(self.data)
 
     async def async_set_window_days(self, number: int, days: str) -> None:
         window = self._window(number)
         updated = replace(window, days=days)
         registers = window_registers(updated)
-        await self._write({base_for(number) + 3: registers[3]})
-        self.data["windows"][number] = updated
-        self.async_set_updated_data(self.data)
+        await self._write_verified({base_for(number) + 3: registers[3]})
 
     async def async_set_eco(self, enabled: bool) -> None:
         value = ECO_WORK_MODE if enabled else GENERAL_WORK_MODE
-        await self._write({WORK_MODE_REGISTER: value})
-        self.data["work_mode"] = value
-        self.async_set_updated_data(self.data)
+        await self._write_verified({WORK_MODE_REGISTER: value})
 
     # -- cheapest hours ----------------------------------------------------
 

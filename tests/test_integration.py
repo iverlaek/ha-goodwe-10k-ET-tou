@@ -15,10 +15,11 @@ pytest.importorskip("homeassistant")
 pytest.importorskip("pytest_homeassistant_custom_component")
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.goodwe_tou.const import DOMAIN
-from custom_components.goodwe_tou.goodwe_udp import GoodweUdpClient
+from custom_components.goodwe_tou.goodwe_udp import GoodweRejectedError, GoodweUdpClient
 
 BASE = 47515
 
@@ -153,6 +154,44 @@ async def test_apply_writes_registers(
 
 
 @pytest.mark.asyncio
+async def test_set_windows_service_writes_a_whole_plan(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The planner card applies a whole plan through one verified service call."""
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(
+            DOMAIN,
+            "set_windows",
+            {
+                "windows": [
+                    {"start": "02:00", "stop": "05:00", "power": -80, "days": "mon"},
+                    {"start": "18:30", "stop": "20:00", "power": 50, "days": "mon"},
+                ]
+            },
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert hass.states.get("time.goodwe_time_of_use_window_1_start").state == "02:00:00"
+    assert hass.states.get("time.goodwe_time_of_use_window_1_stop").state == "05:00:00"
+    assert hass.states.get("number.goodwe_time_of_use_window_1_power").state == "-80.0"
+    assert hass.states.get("text.goodwe_time_of_use_window_1_days").state == "mon"
+
+    assert hass.states.get("time.goodwe_time_of_use_window_2_start").state == "18:30:00"
+    assert hass.states.get("number.goodwe_time_of_use_window_2_power").state == "50.0"
+
+    # the windows that were not given are turned off
+    assert hass.states.get("number.goodwe_time_of_use_window_3_power").state == "0.0"
+    assert hass.states.get("switch.goodwe_time_of_use_eco_mode").state == "on"
+
+
+@pytest.mark.asyncio
 async def test_set_time_writes_single_register(
     hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
 ):
@@ -217,6 +256,90 @@ async def test_set_signed_power_enables_window(
     assert mapping[47519 + 2] == 60
     assert mapping[47519 + 3] == 0xFF7F
     assert hass.states.get("number.goodwe_time_of_use_window_2_power").state == "60.0"
+
+
+@pytest.mark.asyncio
+async def test_read_ignores_a_foreign_frame(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """A frame answering another client's same-length read must not be trusted."""
+    foreign = [
+        0x1A0B, 0x110B, 0x2935, 0x07AC, 0x0002, 0x0000, 0x0026, 0x0796,
+        0x0001, 0x0000, 0x0012, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    ]
+    calls = {"n": 0}
+
+    def _read(offset: int, count: int):
+        if offset == 47000:
+            return [3]
+        assert offset == BASE and count == 16
+        calls["n"] += 1
+        return list(foreign) if calls["n"] == 1 else list(store)
+
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert calls["n"] >= 2
+    assert (
+        hass.states.get("time.goodwe_time_of_use_window_1_start").state == "04:00:00"
+    )
+    assert (
+        hass.states.get("number.goodwe_time_of_use_window_1_power").state == "-100.0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_retries_a_foreign_exception(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """Another client's 'illegal data address' must not fail our read."""
+    calls = {"n": 0}
+
+    def _read(offset: int, count: int):
+        if offset == 47000:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise GoodweRejectedError("illegal data address (2)")
+            return [3]
+        assert offset == BASE and count == 16
+        return list(store)
+
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert calls["n"] >= 2
+    assert hass.states.get("switch.goodwe_time_of_use_eco_mode").state == "on"
+
+
+@pytest.mark.asyncio
+async def test_set_time_raises_when_inverter_ignores_it(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """An unverified single-register write must surface instead of silently reverting."""
+
+    def _ignored(register: int, value: int) -> None:
+        pass  # the inverter silently drops the write
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_ignored),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                "time",
+                "set_value",
+                {
+                    "entity_id": "time.goodwe_time_of_use_window_1_start",
+                    "time": "05:15:00",
+                },
+                blocking=True,
+            )
+        await hass.async_block_till_done()
 
 
 @pytest.mark.asyncio

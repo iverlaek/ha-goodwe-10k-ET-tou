@@ -175,3 +175,29 @@ def window_registers(window: TouWindow) -> dict[int, int]:
 def base_for(window_number: int) -> int:
     """Base register for a 1-based window number."""
     return WINDOW_BASES[window_number]
+
+
+def valid_block(registers: list[int]) -> bool:
+    """Whether a block looks like well-formed Time-of-Use windows.
+
+    A read response does not say which registers it answers, so when the dongle
+    is shared with another client a frame answering somebody else's request can
+    land in our datagram. Foreign data almost never satisfies the time, switch
+    and power ranges checked here, so this cheap test rejects it before it can
+    overwrite the entities.
+    """
+    count = 4 * len(WINDOW_BASES)
+    if len(registers) != count:
+        return False
+    for index in range(0, count, 4):
+        start, stop, power, switch = registers[index : index + 4]
+        if (start >> 8) > 23 or (start & 0xFF) > 59:
+            return False
+        if (stop >> 8) > 23 or (stop & 0xFF) > 59:
+            return False
+        signed = power - 0x10000 if power >= 0x8000 else power
+        if not -100 <= signed <= 100:
+            return False
+        if (switch >> 8) not in (0x00, 0xFF):
+            return False
+    return True
