@@ -1,20 +1,37 @@
 /*
  * goodwe-tou-planner-card
  *
- * A "now -> midnight tomorrow" planner for the GoodWe Time-of-Use integration.
+ * A planner for the GoodWe Time-of-Use integration.
  *
- * It lays the four Time-of-Use windows out on a single timeline that starts at
- * the current quarter hour and ends at midnight at the end of tomorrow. Each
- * window is a draggable bar with a start and a stop handle, a charge/discharge
- * toggle and a manual power percentage.
+ * Two views, chosen with the buttons at the top:
+ *   - "Vandaag + morgen" (default): a timeline that starts at the current
+ *     quarter hour and ends at midnight at the end of tomorrow. Every window
+ *     that is active today and/or tomorrow is drawn as a draggable bar on it.
+ *   - "Hele week": a calendar list of the seven days, each showing the windows
+ *     that run on that day.
+ *
+ * Every window is edited in the same row below the timeline:
+ *   - an Actief / Inactief button (an inactive window is greyed out);
+ *   - a charge slider and a discharge slider (0-100 %), shown next to each
+ *     other. The two are mutually exclusive: setting one clears the other,
+ *     because the inverter stores a single signed power per window;
+ *   - a start and a stop time;
+ *   - seven day chips.
+ *
+ * The user decides how many of the (at most four) inverter windows are used.
+ *
+ * Buttons at the bottom:
+ *   - "Lezen van omvormer" pulls the live schedule from the inverter;
+ *   - "Optimale prijzen berekenen" asks the integration to plan the cheapest
+ *     hours and fills the rows with the result, without writing anything;
+ *   - "Toepassen" writes the whole plan through goodwe_tou.set_windows.
  *
  * Design rules (see the integration README):
- *   - only the period from now until midnight tomorrow is shown;
- *   - tomorrow is greyed out until tomorrow's prices are known;
+ *   - only the period from now until midnight tomorrow is shown on the timeline;
+ *   - tomorrow is greyed out until tomorrow's prices are known (usually ~15:00);
  *   - overlapping windows are impossible: dragging a handle stops at the
  *     neighbouring window;
- *   - a window that crosses midnight is split into two inverter windows on
- *     apply (the inverter stores one window per day).
+ *   - a window lives inside a single day; it never crosses midnight.
  *
  * Configure with:
  *
@@ -22,17 +39,28 @@
  *   title: Laadplanning                                  # optional
  *   prefix: goodwe_time_of_use                           # optional
  *   price_entity: sensor.average_electricity_price       # optional
- *
- * Everything is planned locally; nothing is written until "Toepassen" is
- * pressed (or "Goedkoopste uren", which calls the integration service).
+ *   windows: 4                                           # optional, 1..4
+ *   view: now                                            # optional, "now" | "week"
+ *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
 const PREFIX_DEFAULT = "goodwe_time_of_use";
-const WINDOW_COUNT = 4;
+const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABELS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+const DAY_FULL = [
+  "Maandag",
+  "Dinsdag",
+  "Woensdag",
+  "Donderdag",
+  "Vrijdag",
+  "Zaterdag",
+  "Zondag",
+];
 const MIN = 60000;
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+const pad = (value) => String(value).padStart(2, "0");
 
 const startOfDay = (date) => {
   const copy = new Date(date);
@@ -46,7 +74,6 @@ const addDays = (date, days) => {
 };
 const addMinutes = (date, minutes) => new Date(date.getTime() + minutes * MIN);
 const addHours = (date, hours) => new Date(date.getTime() + hours * 3600000);
-
 const floorSlot = (date, slot) => {
   const copy = new Date(date);
   copy.setSeconds(0, 0);
@@ -54,35 +81,37 @@ const floorSlot = (date, slot) => {
   copy.setMinutes(minutes - (minutes % slot));
   return copy;
 };
-const roundSlot = (date, slot) => {
-  const floored = floorSlot(date, slot);
-  return date.getTime() - floored.getTime() >= (slot * MIN) / 2
-    ? addMinutes(floored, slot)
-    : floored;
-};
-
 const weekdayKey = (date) => DAY_KEYS[(date.getDay() + 6) % 7];
 const hm = (date) =>
-  `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+const fmtHM = (time) => `${pad(time.h)}:${pad(time.m)}`;
 const parseHM = (text) => {
   const parts = String(text || "0:0").split(":");
-  return { h: Number(parts[0]) || 0, m: Number(parts[1]) || 0 };
+  return {
+    h: clamp(Number(parts[0]) || 0, 0, 23),
+    m: clamp(Number(parts[1]) || 0, 0, 59),
+  };
 };
-const withHM = (day, hour, minute) => {
+const withHM = (day, time) => {
   const copy = new Date(day);
-  copy.setHours(hour, minute, 0, 0);
+  copy.setHours(time.h, time.m, 0, 0);
   return copy;
 };
+const minutesOf = (time) => time.h * 60 + time.m;
+const timeOf = (minutes) => ({
+  h: Math.floor(minutes / 60),
+  m: minutes % 60,
+});
 
 const expandDays = (text) => {
   const value = String(text || "").toLowerCase();
   if (value.includes("all") || value.includes("every") || value.includes("mon-sun")) {
-    return DAY_KEYS.slice();
+    return new Set(DAY_KEYS);
   }
-  if (value.includes("weekday")) return ["mon", "tue", "wed", "thu", "fri"];
-  if (value.includes("weekend")) return ["sat", "sun"];
-  if (!value || value === "none" || value === "off" || value === "-") return [];
-  return DAY_KEYS.filter((key) => value.includes(key));
+  if (value.includes("weekday")) return new Set(DAY_KEYS.slice(0, 5));
+  if (value.includes("weekend")) return new Set(DAY_KEYS.slice(5));
+  if (!value || value === "none" || value === "off" || value === "-") return new Set();
+  return new Set(DAY_KEYS.filter((key) => value.includes(key)));
 };
 
 const STYLES = `
@@ -97,6 +126,15 @@ const STYLES = `
   .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
   .switch input:checked + .track { background: var(--primary-color); }
   .switch input:checked + .track::after { transform: translateX(20px); }
+
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 6px; }
+  .seg { display: flex; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; font-size: .8rem; padding: 6px 12px; border: none; background: transparent; color: var(--secondary-text-color); cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--divider-color); }
+  .seg button.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+  .count { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--secondary-text-color); }
+  .count .seg button { min-width: 30px; padding: 6px 0; }
+
   .hint { font-size: .78rem; color: var(--secondary-text-color); margin-bottom: 10px; min-height: 1.1em; }
   .hint.warn { color: var(--warning-color, #ff9800); }
 
@@ -112,39 +150,68 @@ const STYLES = `
   .prices { position: relative; height: 44px; margin: 2px 0 8px; border-radius: 8px; background: var(--secondary-background-color); overflow: hidden; }
   .pbar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; opacity: .85; }
 
-  .row { padding: 8px 0; border-top: 1px solid var(--divider-color); }
+  .row { padding: 10px 0; border-top: 1px solid var(--divider-color); transition: opacity .15s; }
   .row:first-child { border-top: none; }
+  .row.off { opacity: .5; }
   .rowtop { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .wlabel { font-weight: 600; font-size: .88rem; color: var(--primary-text-color); }
   .badge { font-size: .78rem; font-variant-numeric: tabular-nums; padding: 2px 9px; border-radius: 10px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
   .badge.charge { background: #c62828; color: #fff; }
   .badge.discharge { background: #2e7d32; color: #fff; }
   .spacer { flex: 1; }
-  button.mode { font: inherit; font-size: .8rem; padding: 4px 12px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); cursor: pointer; }
-  button.mode.charge { background: #c62828; border-color: #c62828; color: #fff; }
-  button.mode.discharge { background: #2e7d32; border-color: #2e7d32; color: #fff; }
-  .pctwrap { display: flex; align-items: center; gap: 2px; font-size: .8rem; color: var(--secondary-text-color); }
-  .pctwrap input { width: 52px; font: inherit; padding: 3px 6px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); text-align: right; }
-  .pctwrap input:disabled { opacity: .4; }
-  button.off { font: inherit; font-size: .8rem; line-height: 1; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--divider-color); background: transparent; color: var(--secondary-text-color); cursor: pointer; }
+  button.active { font: inherit; font-size: .78rem; padding: 4px 12px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--secondary-text-color); cursor: pointer; }
+  button.active.on { background: #2e7d32; border-color: #2e7d32; color: #fff; }
 
-  .track { position: relative; height: 40px; border-radius: 8px; background: var(--secondary-background-color); overflow: hidden; }
-  .track .grey { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(128,128,128,.16) 0 6px, transparent 6px 12px); pointer-events: none; }
-  .track .divider { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--divider-color); opacity: .8; pointer-events: none; }
-  .bar { position: absolute; top: 6px; bottom: 6px; border-radius: 6px; background: var(--disabled-color, #9e9e9e); display: flex; align-items: center; justify-content: center; min-width: 6px; }
+  .row .track { position: relative; height: 34px; border-radius: 8px; background: var(--secondary-background-color); overflow: hidden; margin-bottom: 6px; }
+  .row .track .grey { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, rgba(128,128,128,.16) 0 6px, transparent 6px 12px); pointer-events: none; }
+  .row .track .divider { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--divider-color); opacity: .8; pointer-events: none; }
+  .row .track .bars { position: absolute; inset: 0; }
+  .bar { position: absolute; top: 5px; bottom: 5px; border-radius: 6px; background: var(--disabled-color, #9e9e9e); display: flex; align-items: center; justify-content: center; min-width: 6px; }
   .bar.charge { background: linear-gradient(180deg, #ef5350, #b71c1c); }
   .bar.discharge { background: linear-gradient(180deg, #66bb6a, #1b5e20); }
   .barlabel { font-size: .7rem; font-weight: 600; color: #fff; white-space: nowrap; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,.45); }
-  .handle { position: absolute; top: 50%; width: 14px; height: 30px; transform: translateY(-50%); border-radius: 6px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.28); cursor: ew-resize; touch-action: none; }
+  .handle { position: absolute; top: 50%; width: 14px; height: 26px; transform: translateY(-50%); border-radius: 6px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.28); cursor: ew-resize; touch-action: none; }
   .handle.left { left: -6px; }
   .handle.right { right: -6px; }
-  .empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; font-size: .78rem; color: var(--secondary-text-color); }
+  .row .track .empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; font-size: .78rem; color: var(--secondary-text-color); }
 
-  .actions { display: flex; gap: 8px; margin-top: 16px; }
-  .actions button { flex: 1; padding: 10px 8px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); font: inherit; cursor: pointer; }
+  .times { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  input[type=time] { flex: 1; min-width: 0; background: var(--secondary-background-color); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 8px; padding: 5px 8px; font: inherit; }
+  .dash { color: var(--secondary-text-color); }
+
+  .sld { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: .8rem; color: var(--secondary-text-color); }
+  .sld > span { width: 62px; flex: none; }
+  .sld input[type=range] { flex: 1; min-width: 0; }
+  .sld.charge input[type=range] { accent-color: #c62828; }
+  .sld.discharge input[type=range] { accent-color: #2e7d32; }
+  .sld > b { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--primary-text-color); }
+
+  .days { display: flex; gap: 4px; margin-top: 8px; }
+  .chip { flex: 1; padding: 5px 0; border-radius: 6px; border: 1px solid var(--divider-color); background: transparent; color: var(--secondary-text-color); font: inherit; font-size: .72rem; cursor: pointer; }
+  .chip.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+
+  .week { display: none; }
+  .wday { padding: 8px 0; border-top: 1px solid var(--divider-color); }
+  .wday:first-child { border-top: none; }
+  .wdayname { font-size: .82rem; font-weight: 600; color: var(--primary-text-color); margin-bottom: 4px; }
+  .witem { display: flex; align-items: center; gap: 10px; font-size: .8rem; padding: 4px 8px; border-radius: 6px; background: var(--secondary-background-color); margin-top: 4px; }
+  .witem .wname { font-weight: 600; color: var(--primary-text-color); min-width: 66px; }
+  .witem .wtime { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); }
+  .witem .wpow { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .witem.charge .wpow { color: #c62828; }
+  .witem.discharge .wpow { color: #2e7d32; }
+  .wempty { font-size: .78rem; color: var(--secondary-text-color); padding: 2px 8px; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .actions button { flex: 1 1 30%; padding: 10px 8px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); font: inherit; cursor: pointer; }
   .actions button.primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
   .actions button:active { transform: translateY(1px); }
   .error { color: var(--error-color, #d32f2f); font-size: .8rem; margin-top: 8px; min-height: 1em; }
+
+  ha-card.view-week .axis,
+  ha-card.view-week .prices,
+  ha-card.view-week .row .track { display: none !important; }
+  ha-card.view-week .week { display: block; }
 `;
 
 class GoodweTouPlannerCard extends HTMLElement {
@@ -157,11 +224,14 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._dirty = false;
     this._drag = null;
     this._segs = [];
+    this._rows = [];
     this._priceSlots = [];
     this._tomorrowKnown = true;
     this._slot = 15;
-    this._onDragMove = this._onDragMove.bind(this);
-    this._onDragUp = this._onDragUp.bind(this);
+    this._count = MAX_WINDOWS;
+    this._view = "now";
+    this._onPointerMove = this._onPointerMove.bind(this);
+    this._onPointerUp = this._onPointerUp.bind(this);
   }
 
   setConfig(config) {
@@ -169,7 +239,14 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._prefix = this._config.prefix || PREFIX_DEFAULT;
     this._title = this._config.title || "Laadplanning";
     this._priceEntity = this._config.price_entity || null;
-    this._slot = Number(this._config.slot_minutes) > 0 ? Number(this._config.slot_minutes) : 15;
+    this._slot =
+      Number(this._config.slot_minutes) > 0 ? Number(this._config.slot_minutes) : 15;
+    this._count = clamp(
+      Number(this._config.windows) || MAX_WINDOWS,
+      1,
+      MAX_WINDOWS
+    );
+    this._view = this._config.view === "week" ? "week" : "now";
     this._built = false;
     if (this._hass) this._build();
   }
@@ -179,15 +256,16 @@ class GoodweTouPlannerCard extends HTMLElement {
     if (!this._built) this._build();
     if (!this._built) return;
 
+    this._updateBounds();
     const priceState = this._priceEntity ? this._state(this._priceEntity) : undefined;
     const priceSig = priceState ? priceState.last_updated : null;
     if (priceSig !== this._priceSig) {
       this._priceSig = priceSig;
-      this._prices = this._detectPrices();
-      this._priceSlots = this._prices.slots;
-      this._tomorrowKnown = this._prices.tomorrowKnown;
+      const prices = this._detectPrices();
+      this._priceSlots = prices.slots;
+      this._tomorrowKnown = prices.tomorrowKnown;
     }
-    if (!this._dirty) this._readEntities();
+    if (!this._dirty) this._readWindows();
     this._renderEco();
     this._render();
   }
@@ -197,7 +275,7 @@ class GoodweTouPlannerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 10;
+    return 12;
   }
 
   _entity(domain, suffix) {
@@ -226,27 +304,62 @@ class GoodweTouPlannerCard extends HTMLElement {
             </span>
           </label>
         </div>
+        <div class="toolbar">
+          <div class="seg" id="viewseg">
+            <button data-view="now">Vandaag + morgen</button>
+            <button data-view="week">Hele week (7 dagen)</button>
+          </div>
+          <div class="count" id="countseg"><span>Aantal vensters</span></div>
+        </div>
         <div class="hint" id="hint"></div>
         <div class="axis" id="axis"></div>
         <div class="prices" id="prices"></div>
         <div class="rows" id="rows"></div>
+        <div class="week" id="week"></div>
         <div class="actions">
-          <button id="read">Lezen</button>
-          <button id="cheapest">Goedkoopste uren</button>
+          <button id="read">Lezen van omvormer</button>
+          <button id="calc">Optimale prijzen berekenen</button>
           <button id="apply" class="primary">Toepassen</button>
         </div>
         <div class="error" id="error"></div>
       </ha-card>
     `;
     root.querySelector(".title").textContent = this._title;
+    this._card = root.querySelector("ha-card");
     this._axisEl = root.querySelector("#axis");
     this._pricesEl = root.querySelector("#prices");
+    this._weekEl = root.querySelector("#week");
     this._hintEl = root.querySelector("#hint");
     this._errorEl = root.querySelector("#error");
 
+    this._viewBtns = Array.from(root.querySelectorAll("#viewseg button"));
+    for (const button of this._viewBtns) {
+      button.addEventListener("click", () => {
+        this._view = button.dataset.view;
+        this._render();
+      });
+    }
+
+    const countEl = root.querySelector("#countseg");
+    const countSeg = document.createElement("div");
+    countSeg.className = "seg";
+    this._countBtns = [];
+    for (let n = 1; n <= MAX_WINDOWS; n++) {
+      const button = document.createElement("button");
+      button.textContent = String(n);
+      button.dataset.count = String(n);
+      button.addEventListener("click", () => {
+        this._count = n;
+        this._render();
+      });
+      countSeg.appendChild(button);
+      this._countBtns.push(button);
+    }
+    countEl.appendChild(countSeg);
+
     const rowsEl = root.querySelector("#rows");
     this._rows = [];
-    for (let n = 1; n <= WINDOW_COUNT; n++) {
+    for (let n = 1; n <= MAX_WINDOWS; n++) {
       this._rows.push(this._makeRow(rowsEl, n));
     }
 
@@ -258,13 +371,14 @@ class GoodweTouPlannerCard extends HTMLElement {
     );
 
     root.querySelector("#read").addEventListener("click", () => this._read());
-    root.querySelector("#cheapest").addEventListener("click", () => this._cheapest());
+    root.querySelector("#calc").addEventListener("click", () => this._calc());
     root.querySelector("#apply").addEventListener("click", () => this._apply());
 
     this._built = true;
   }
 
   _makeRow(host, n) {
+    const index = n - 1;
     const row = document.createElement("div");
     row.className = "row";
     row.innerHTML = `
@@ -272,174 +386,119 @@ class GoodweTouPlannerCard extends HTMLElement {
         <span class="wlabel">Venster ${n}</span>
         <span class="badge"></span>
         <span class="spacer"></span>
-        <button class="mode"></button>
-        <label class="pctwrap"><input type="number" min="1" max="100" step="5">%</label>
-        <button class="off" title="Venster uitzetten">&#10005;</button>
+        <button class="active"></button>
       </div>
       <div class="track">
         <div class="grey"></div>
         <div class="divider"></div>
-        <div class="bar"><span class="handle left"></span><span class="handle right"></span><span class="barlabel"></span></div>
-        <div class="empty">niet actief</div>
+        <div class="bars"></div>
+        <div class="empty"></div>
       </div>
+      <div class="times">
+        <input type="time" class="start">
+        <span class="dash">&ndash;</span>
+        <input type="time" class="stop">
+      </div>
+      <label class="sld charge"><span>Laden</span><input type="range" min="0" max="100" step="5" class="charge"><b class="chargeval">100%</b></label>
+      <label class="sld discharge"><span>Ontladen</span><input type="range" min="0" max="100" step="5" class="discharge"><b class="dischargeval">0%</b></label>
+      <div class="days"></div>
     `;
     const refs = {
-      n,
       row,
       badge: row.querySelector(".badge"),
-      modeBtn: row.querySelector(".mode"),
-      pctInput: row.querySelector(".pctwrap input"),
-      offBtn: row.querySelector(".off"),
+      activeBtn: row.querySelector(".active"),
       track: row.querySelector(".track"),
       grey: row.querySelector(".grey"),
       divider: row.querySelector(".divider"),
-      bar: row.querySelector(".bar"),
-      barLabel: row.querySelector(".barlabel"),
-      handleL: row.querySelector(".handle.left"),
-      handleR: row.querySelector(".handle.right"),
+      bars: row.querySelector(".bars"),
       empty: row.querySelector(".empty"),
+      startInput: row.querySelector("input.start"),
+      stopInput: row.querySelector("input.stop"),
+      chargeInput: row.querySelector("input.charge"),
+      dischargeInput: row.querySelector("input.discharge"),
+      chargeVal: row.querySelector(".chargeval"),
+      dischargeVal: row.querySelector(".dischargeval"),
+      chips: {},
     };
 
-    refs.modeBtn.addEventListener("click", () => this._toggleMode(n - 1));
-    refs.offBtn.addEventListener("click", () => this._disable(n - 1));
-    refs.pctInput.addEventListener("change", () => {
-      const value = clamp(Number(refs.pctInput.value) || 100, 1, 100);
-      const seg = this._segs[n - 1];
-      if (seg) seg.power = value;
-      this._dirty = true;
-      this._render();
+    refs.activeBtn.addEventListener("click", () => this._toggleActive(index));
+    refs.startInput.addEventListener("change", () => this._setStart(index));
+    refs.stopInput.addEventListener("change", () => this._setStop(index));
+    refs.chargeInput.addEventListener("input", () => this._setCharge(index));
+    refs.dischargeInput.addEventListener("input", () => this._setDischarge(index));
+    refs.bars.addEventListener("pointerdown", (event) => this._startDrag(event, index));
+
+    const daysEl = row.querySelector(".days");
+    DAY_KEYS.forEach((key, dayIndex) => {
+      const chip = document.createElement("button");
+      chip.className = "chip";
+      chip.textContent = DAY_LABELS[dayIndex];
+      chip.title = DAY_FULL[dayIndex];
+      chip.addEventListener("click", () => this._toggleDay(index, key));
+      daysEl.appendChild(chip);
+      refs.chips[key] = chip;
     });
-    this._attachDrag(refs, "left");
-    this._attachDrag(refs, "right");
 
     host.appendChild(row);
     return refs;
   }
 
-  _attachDrag(row, which) {
-    const handle = which === "left" ? row.handleL : row.handleR;
-    handle.addEventListener("pointerdown", (event) => {
-      const index = row.n - 1;
-      const seg = this._segs[index];
-      if (!seg || !seg.active) return;
-      if (!this._tomorrowKnown && seg.start >= this._tMid) return;
-      event.preventDefault();
-      event.stopPropagation();
-      try {
-        handle.setPointerCapture(event.pointerId);
-      } catch (err) {
-        /* ignore */
-      }
-      this._drag = { index, which };
-      handle.addEventListener("pointermove", this._onDragMove);
-      handle.addEventListener("pointerup", this._onDragUp);
-      handle.addEventListener("pointercancel", this._onDragUp);
-    });
-  }
+  // -- time bounds / data ------------------------------------------------
 
-  _onDragMove(event) {
-    if (!this._drag) return;
-    const { index, which } = this._drag;
-    const seg = this._segs[index];
-    const row = this._rows[index];
-    if (!seg || !row) return;
-    const rect = row.track.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    let moment = new Date(this._t0.getTime() + ratio * (this._t1 - this._t0));
-    moment = roundSlot(moment, this._slot);
-    const bounds = this._bounds(seg);
-    if (which === "left") {
-      const high = addMinutes(seg.stop, -this._slot).getTime();
-      seg.start = new Date(clamp(moment.getTime(), bounds.lo.getTime(), high));
-    } else {
-      const low = addMinutes(seg.start, this._slot).getTime();
-      seg.stop = new Date(clamp(moment.getTime(), low, bounds.hi.getTime()));
-    }
-    this._dirty = true;
-    this._render();
-  }
-
-  _onDragUp(event) {
-    const handle = event.currentTarget;
-    handle.removeEventListener("pointermove", this._onDragMove);
-    handle.removeEventListener("pointerup", this._onDragUp);
-    handle.removeEventListener("pointercancel", this._onDragUp);
-    try {
-      handle.releasePointerCapture(event.pointerId);
-    } catch (err) {
-      /* ignore */
-    }
-    this._drag = null;
-  }
-
-  _bounds(seg) {
-    let lo = new Date(this._t0);
-    let hi = this._tomorrowKnown ? new Date(this._t1) : new Date(this._tMid);
-    for (const other of this._segs) {
-      if (other === seg || !other.active) continue;
-      if (other.stop <= seg.start) {
-        lo = new Date(Math.max(lo.getTime(), other.stop.getTime()));
-      }
-      if (other.start >= seg.stop) {
-        hi = new Date(Math.min(hi.getTime(), other.start.getTime()));
-      }
-    }
-    if (lo.getTime() > hi.getTime()) lo = new Date(hi);
-    return { lo, hi };
-  }
-
-  // -- data --------------------------------------------------------------
-
-  _readEntities() {
+  _updateBounds() {
     const now = new Date();
+    this._now = now;
     this._t0 = floorSlot(now, this._slot);
-    this._tMid = startOfDay(addDays(now, 1));
+    this._todayDate = startOfDay(now);
+    this._tomorrowDate = startOfDay(addDays(now, 1));
+    this._tMid = this._tomorrowDate;
     this._t1 = startOfDay(addDays(now, 2));
-    const todayKey = weekdayKey(now);
-    const tomorrowKey = weekdayKey(addDays(now, 1));
+  }
+
+  _readWindows() {
     this._segs = [];
-    for (let n = 1; n <= WINDOW_COUNT; n++) {
-      this._segs.push(this._readWindow(n, todayKey, tomorrowKey));
+    for (let n = 1; n <= MAX_WINDOWS; n++) {
+      this._segs.push(this._readWindow(n));
     }
   }
 
-  _readWindow(n, todayKey, tomorrowKey) {
+  _readWindow(n) {
     const startState = this._state(this._entity("time", `window_${n}_start`));
     const stopState = this._state(this._entity("time", `window_${n}_stop`));
     const powerState = this._state(this._entity("number", `window_${n}_power`));
     const daysState = this._state(this._entity("text", `window_${n}_days`));
-    const base = {
-      slot: n,
-      active: false,
-      mode: "off",
-      power: 100,
-      start: this._t0,
-      stop: addMinutes(this._t0, this._slot),
-    };
-    if (!startState || !stopState || !powerState) return base;
 
-    const days = daysState ? daysState.state : "all";
-    const daySet = expandDays(days);
-    let dayDate = null;
-    if (daySet.includes(todayKey)) dayDate = startOfDay(this._t0);
-    else if (daySet.includes(tomorrowKey)) dayDate = startOfDay(this._tMid);
+    const seg = {
+      n,
+      enabled: false,
+      charge: 100,
+      discharge: 0,
+      days: new Set(),
+      startHM: { h: 0, m: 0 },
+      stopHM: { h: 1, m: 0 },
+    };
+    if (!startState || !stopState || !powerState) return seg;
+
+    seg.startHM = parseHM(startState.state);
+    seg.stopHM = parseHM(stopState.state);
+    if (minutesOf(seg.stopHM) <= minutesOf(seg.startHM)) {
+      seg.stopHM = timeOf(clamp(minutesOf(seg.startHM) + this._slot, 0, 1439));
+    }
+    seg.days = expandDays(daysState ? daysState.state : "all");
 
     const signed = Number(powerState.state) || 0;
-    let power = Math.abs(signed);
-    power = power > 0 ? Math.min(100, power) : 100;
-    const mode = signed < 0 ? "charge" : signed > 0 ? "discharge" : "off";
-    if (dayDate === null) return { ...base, mode, power };
-
-    const start = parseHM(startState.state);
-    const stop = parseHM(stopState.state);
-    let startAt = withHM(dayDate, start.h, start.m);
-    let stopAt = withHM(dayDate, stop.h, stop.m);
-    if (stopAt <= startAt) return { ...base, mode, power };
-    if (stopAt <= this._t0) return { ...base, mode, power };
-    if (startAt < this._t0) startAt = new Date(this._t0);
-    if (stopAt > this._t1) stopAt = new Date(this._t1);
-    return { slot: n, active: true, mode, power, start: startAt, stop: stopAt };
+    if (signed < 0) {
+      seg.charge = clamp(Math.round(-signed), 1, 100);
+      seg.discharge = 0;
+      seg.enabled = true;
+    } else if (signed > 0) {
+      seg.discharge = clamp(Math.round(signed), 1, 100);
+      seg.charge = 0;
+      seg.enabled = true;
+    } else {
+      seg.enabled = false;
+    }
+    return seg;
   }
 
   _detectPrices() {
@@ -473,65 +532,180 @@ class GoodweTouPlannerCard extends HTMLElement {
     return { slots, tomorrowKnown };
   }
 
+  _mode(seg) {
+    if (seg.charge > 0) return "charge";
+    if (seg.discharge > 0) return "discharge";
+    return "off";
+  }
+
+  _pct(moment) {
+    return (
+      ((moment.getTime() - this._t0.getTime()) /
+        (this._t1.getTime() - this._t0.getTime())) *
+      100
+    );
+  }
+
   // -- rendering ---------------------------------------------------------
 
   _render() {
     if (!this._segs.length) return;
-    this._renderAxis();
-    this._renderPrices();
-    const pct = (moment) =>
-      ((moment.getTime() - this._t0.getTime()) / (this._t1.getTime() - this._t0.getTime())) * 100;
+    this._card.classList.toggle("view-week", this._view === "week");
+    for (const button of this._viewBtns) {
+      button.classList.toggle("on", button.dataset.view === this._view);
+    }
+    for (const button of this._countBtns) {
+      button.classList.toggle("on", Number(button.dataset.count) === this._count);
+    }
 
-    this._hintEl.className = this._tomorrowKnown ? "hint" : "hint warn";
-    this._hintEl.textContent = this._tomorrowKnown
-      ? "Prijzen t/m morgen bekend."
-      : "Morgen is nog grijs: prijzen van morgen zijn nog niet bekend (meestal rond 15:00).";
+    if (this._view === "week") {
+      this._hintEl.className = "hint";
+      this._hintEl.textContent =
+        "Hele week: elk venster loopt op de gekozen dagen (chips onderaan elk venster).";
+    } else if (this._tomorrowKnown) {
+      this._hintEl.className = "hint";
+      this._hintEl.textContent = "Prijzen t/m morgen bekend.";
+    } else {
+      this._hintEl.className = "hint warn";
+      this._hintEl.textContent =
+        "Morgen is nog grijs: prijzen van morgen zijn nog niet bekend (meestal rond 15:00).";
+    }
 
-    const activeElement = this.shadowRoot.activeElement;
-    for (let i = 0; i < this._rows.length; i++) {
-      const row = this._rows[i];
-      const seg = this._segs[i];
-      const midPct = pct(this._tMid);
+    if (this._view === "now") {
+      this._renderAxis();
+      this._renderPrices();
+    }
+    for (let i = 0; i < this._rows.length; i++) this._renderRow(i);
+    if (this._view === "week") this._renderWeek();
+  }
 
-      row.divider.style.left = `${midPct}%`;
-      if (this._tomorrowKnown) {
-        row.grey.style.display = "none";
-      } else {
-        row.grey.style.display = "block";
-        row.grey.style.left = `${midPct}%`;
-        row.grey.style.width = `${100 - midPct}%`;
+  _renderRow(i) {
+    const row = this._rows[i];
+    const seg = this._segs[i];
+    const mode = this._mode(seg);
+    const active = this.shadowRoot.activeElement;
+
+    row.row.style.display = i < this._count ? "" : "none";
+    row.row.classList.toggle("off", !seg.enabled);
+
+    row.badge.textContent = !seg.enabled
+      ? "inactief"
+      : mode === "charge"
+        ? `${seg.charge}% laden`
+        : mode === "discharge"
+          ? `${seg.discharge}% ontladen`
+          : "geen vermogen";
+    row.badge.className = `badge ${seg.enabled && mode !== "off" ? mode : ""}`;
+
+    row.activeBtn.textContent = seg.enabled ? "Actief" : "Inactief";
+    row.activeBtn.classList.toggle("on", seg.enabled);
+
+    if (active !== row.startInput) row.startInput.value = fmtHM(seg.startHM);
+    if (active !== row.stopInput) row.stopInput.value = fmtHM(seg.stopHM);
+    if (active !== row.chargeInput) row.chargeInput.value = String(seg.charge);
+    if (active !== row.dischargeInput) row.dischargeInput.value = String(seg.discharge);
+    row.chargeVal.textContent = `${seg.charge}%`;
+    row.dischargeVal.textContent = `${seg.discharge}%`;
+
+    for (const key of DAY_KEYS) {
+      row.chips[key].classList.toggle("on", seg.days.has(key));
+    }
+
+    const mid = this._pct(this._tMid);
+    row.divider.style.left = `${mid}%`;
+    if (this._tomorrowKnown) {
+      row.grey.style.display = "none";
+    } else {
+      row.grey.style.display = "block";
+      row.grey.style.left = `${mid}%`;
+      row.grey.style.width = `${100 - mid}%`;
+    }
+
+    this._renderBars(i);
+  }
+
+  _renderBars(i) {
+    const row = this._rows[i];
+    const seg = this._segs[i];
+    row.bars.innerHTML = "";
+    if (this._view !== "now") return;
+
+    if (!seg.enabled) {
+      row.empty.textContent = "niet actief";
+      row.empty.style.display = "flex";
+      return;
+    }
+    const mode = this._mode(seg);
+    let drew = false;
+    for (const [tag, dayDate] of [
+      ["today", this._todayDate],
+      ["tomorrow", this._tomorrowDate],
+    ]) {
+      if (!seg.days.has(weekdayKey(dayDate))) continue;
+      const start = withHM(dayDate, seg.startHM);
+      const stop = withHM(dayDate, seg.stopHM);
+      const from = Math.max(start.getTime(), this._t0.getTime());
+      const to = Math.min(stop.getTime(), this._t1.getTime());
+      if (to <= from) continue;
+      drew = true;
+      const left = this._pct(new Date(from));
+      const width = Math.max(0.5, this._pct(new Date(to)) - left);
+      const bar = document.createElement("div");
+      bar.className = `bar ${mode === "off" ? "" : mode}`;
+      bar.style.left = `${left}%`;
+      bar.style.width = `${width}%`;
+      bar.innerHTML =
+        `<span class="handle left" data-i="${i}" data-day="${tag}"></span>` +
+        `<span class="barlabel">${fmtHM(seg.startHM)}&ndash;${fmtHM(seg.stopHM)}</span>` +
+        `<span class="handle right" data-i="${i}" data-day="${tag}"></span>`;
+      row.bars.appendChild(bar);
+    }
+    row.empty.textContent = "niet in deze periode";
+    row.empty.style.display = drew ? "none" : "flex";
+  }
+
+  _renderWeek() {
+    const host = this._weekEl;
+    host.innerHTML = "";
+    const todayKey = weekdayKey(this._todayDate);
+    const tomorrowKey = weekdayKey(this._tomorrowDate);
+    for (let d = 0; d < DAY_KEYS.length; d++) {
+      const key = DAY_KEYS[d];
+      const day = document.createElement("div");
+      day.className = "wday";
+
+      const head = document.createElement("div");
+      head.className = "wdayname";
+      let suffix = "";
+      if (key === todayKey) suffix = " \u00b7 vandaag";
+      else if (key === tomorrowKey) suffix = " \u00b7 morgen";
+      head.textContent = DAY_FULL[d] + suffix;
+      day.appendChild(head);
+
+      let count = 0;
+      for (let i = 0; i < this._count; i++) {
+        const seg = this._segs[i];
+        if (!seg.enabled || !seg.days.has(key)) continue;
+        const mode = this._mode(seg);
+        if (mode === "off") continue;
+        const item = document.createElement("div");
+        item.className = `witem ${mode}`;
+        item.innerHTML =
+          `<span class="wname">Venster ${i + 1}</span>` +
+          `<span class="wtime">${fmtHM(seg.startHM)}&ndash;${fmtHM(seg.stopHM)}</span>` +
+          `<span class="wpow">${
+            mode === "charge" ? `${seg.charge}% laden` : `${seg.discharge}% ontladen`
+          }</span>`;
+        day.appendChild(item);
+        count++;
       }
-
-      if (seg.active) {
-        const left = pct(seg.start);
-        const width = Math.max(0.5, pct(seg.stop) - left);
-        row.bar.style.display = "flex";
-        row.empty.style.display = "none";
-        row.bar.style.left = `${left}%`;
-        row.bar.style.width = `${width}%`;
-        row.bar.className = `bar ${seg.mode === "off" ? "" : seg.mode}`;
-        row.barLabel.textContent = `${hm(seg.start)} \u2013 ${hm(seg.stop)}`;
-      } else {
-        row.bar.style.display = "none";
-        row.empty.style.display = "flex";
+      if (!count) {
+        const empty = document.createElement("div");
+        empty.className = "wempty";
+        empty.textContent = "geen vensters";
+        day.appendChild(empty);
       }
-
-      const label =
-        seg.mode === "charge"
-          ? `${seg.power}% laden`
-          : seg.mode === "discharge"
-            ? `${seg.power}% ontladen`
-            : seg.active
-              ? "uit"
-              : "niet actief";
-      row.badge.textContent = label;
-      row.badge.className = `badge ${seg.mode === "off" ? "" : seg.mode}`;
-
-      row.modeBtn.textContent =
-        seg.mode === "charge" ? "Laden" : seg.mode === "discharge" ? "Ontladen" : "Uit";
-      row.modeBtn.className = `mode ${seg.mode === "off" ? "" : seg.mode}`;
-      if (activeElement !== row.pctInput) row.pctInput.value = String(seg.power);
-      row.pctInput.disabled = seg.mode === "off";
+      host.appendChild(day);
     }
   }
 
@@ -546,9 +720,6 @@ class GoodweTouPlannerCard extends HTMLElement {
   _renderAxis() {
     const axis = this._axisEl;
     axis.innerHTML = "";
-    const pct = (moment) =>
-      ((moment.getTime() - this._t0.getTime()) / (this._t1.getTime() - this._t0.getTime())) * 100;
-
     const dayrow = document.createElement("div");
     dayrow.className = "dayrow";
     const bands = [
@@ -558,8 +729,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     for (const [from, to, label, grey] of bands) {
       const el = document.createElement("div");
       el.className = `dayband${grey ? " grey" : ""}`;
-      el.style.left = `${pct(from)}%`;
-      el.style.width = `${pct(to) - pct(from)}%`;
+      el.style.left = `${this._pct(from)}%`;
+      el.style.width = `${this._pct(to) - this._pct(from)}%`;
       el.textContent = label;
       dayrow.appendChild(el);
     }
@@ -573,19 +744,19 @@ class GoodweTouPlannerCard extends HTMLElement {
     for (; cursor < this._t1; cursor = addHours(cursor, 1)) {
       const line = document.createElement("div");
       line.className = "tick";
-      line.style.left = `${pct(cursor)}%`;
+      line.style.left = `${this._pct(cursor)}%`;
       tickrow.appendChild(line);
       if (cursor.getHours() % step === 0) {
         const label = document.createElement("div");
         label.className = "ticklabel";
-        label.style.left = `${pct(cursor)}%`;
-        label.textContent = String(cursor.getHours()).padStart(2, "0");
+        label.style.left = `${this._pct(cursor)}%`;
+        label.textContent = pad(cursor.getHours());
         tickrow.appendChild(label);
       }
     }
     const midnight = document.createElement("div");
     midnight.className = "tick major";
-    midnight.style.left = `${pct(this._tMid)}%`;
+    midnight.style.left = `${this._pct(this._tMid)}%`;
     tickrow.appendChild(midnight);
     axis.appendChild(tickrow);
   }
@@ -608,15 +779,13 @@ class GoodweTouPlannerCard extends HTMLElement {
     const prices = visible.map((slot) => slot.price);
     const low = Math.min(...prices);
     const high = Math.max(...prices);
-    const pct = (moment) =>
-      ((moment.getTime() - this._t0.getTime()) / (this._t1.getTime() - this._t0.getTime())) * 100;
     for (const slot of visible) {
       const next = addMinutes(slot.t, this._slot);
       const ratio = high > low ? (slot.price - low) / (high - low) : 0.5;
       const bar = document.createElement("div");
       bar.className = "pbar";
-      bar.style.left = `${pct(slot.t)}%`;
-      bar.style.width = `${Math.max(0.2, pct(next) - pct(slot.t))}%`;
+      bar.style.left = `${this._pct(slot.t)}%`;
+      bar.style.width = `${Math.max(0.2, this._pct(next) - this._pct(slot.t))}%`;
       bar.style.height = `${18 + ratio * 82}%`;
       bar.style.background = `hsl(${(1 - ratio) * 120}, 62%, 45%)`;
       bar.title = `${hm(slot.t)} \u00b7 ${slot.price.toFixed(3)}`;
@@ -626,87 +795,139 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   // -- editing -----------------------------------------------------------
 
-  _toggleMode(index) {
+  _toggleActive(index) {
     const seg = this._segs[index];
     if (!seg) return;
-    if (!seg.active) {
-      const slot = this._freeSlot();
-      if (!slot) {
-        this._showError("Geen vrije ruimte meer op de tijdlijn.");
-        return;
-      }
-      seg.start = slot.start;
-      seg.stop = slot.stop;
-      seg.active = true;
-      seg.mode = "charge";
-    } else if (seg.mode === "charge") {
-      seg.mode = "discharge";
-    } else {
-      seg.mode = "charge";
+    seg.enabled = !seg.enabled;
+    if (seg.enabled && seg.charge === 0 && seg.discharge === 0) {
+      seg.charge = 100;
     }
     this._dirty = true;
     this._render();
   }
 
-  _disable(index) {
+  _setCharge(index) {
     const seg = this._segs[index];
-    if (!seg || !seg.active) return;
-    seg.mode = "off";
+    const row = this._rows[index];
+    if (!seg || !row) return;
+    seg.charge = clamp(Number(row.chargeInput.value) || 0, 0, 100);
+    if (seg.charge > 0) {
+      seg.discharge = 0;
+      seg.enabled = true;
+    }
+    this._dirty = true;
+    this._renderRow(index);
+  }
+
+  _setDischarge(index) {
+    const seg = this._segs[index];
+    const row = this._rows[index];
+    if (!seg || !row) return;
+    seg.discharge = clamp(Number(row.dischargeInput.value) || 0, 0, 100);
+    if (seg.discharge > 0) {
+      seg.charge = 0;
+      seg.enabled = true;
+    }
+    this._dirty = true;
+    this._renderRow(index);
+  }
+
+  _setStart(index) {
+    const seg = this._segs[index];
+    const row = this._rows[index];
+    if (!seg || !row) return;
+    const value = minutesOf(parseHM(row.startInput.value));
+    const stop = minutesOf(seg.stopHM);
+    seg.startHM = timeOf(clamp(value, 0, stop - this._slot));
+    this._dirty = true;
+    this._renderRow(index);
+  }
+
+  _setStop(index) {
+    const seg = this._segs[index];
+    const row = this._rows[index];
+    if (!seg || !row) return;
+    const value = minutesOf(parseHM(row.stopInput.value));
+    const start = minutesOf(seg.startHM);
+    seg.stopHM = timeOf(clamp(value, start + this._slot, 1439));
+    this._dirty = true;
+    this._renderRow(index);
+  }
+
+  _toggleDay(index, key) {
+    const seg = this._segs[index];
+    if (!seg) return;
+    if (seg.days.has(key)) seg.days.delete(key);
+    else seg.days.add(key);
     this._dirty = true;
     this._render();
   }
 
-  _freeSlot() {
-    const high = this._tomorrowKnown ? this._t1 : this._tMid;
-    const busy = this._segs
-      .filter((seg) => seg.active && seg.mode !== "off")
-      .map((seg) => [seg.start.getTime(), seg.stop.getTime()])
-      .sort((a, b) => a[0] - b[0]);
-    let cursor = this._t0.getTime();
-    const gaps = [];
-    for (const [from, to] of busy) {
-      if (from > cursor) gaps.push([cursor, from]);
-      cursor = Math.max(cursor, to);
-    }
-    if (high.getTime() > cursor) gaps.push([cursor, high.getTime()]);
-    const gap =
-      gaps.find((g) => g[1] - g[0] >= 60 * MIN) ||
-      gaps.find((g) => g[1] - g[0] >= this._slot * MIN);
-    if (!gap) return null;
-    return {
-      start: new Date(gap[0]),
-      stop: new Date(Math.min(gap[0] + 60 * MIN, gap[1])),
+  _startDrag(event, index) {
+    const handle = event.target.closest(".handle");
+    if (!handle) return;
+    const seg = this._segs[index];
+    if (!seg || !seg.enabled) return;
+    event.preventDefault();
+    this._drag = {
+      index,
+      which: handle.classList.contains("left") ? "left" : "right",
+      day: handle.dataset.day === "tomorrow" ? this._tomorrowDate : this._todayDate,
     };
+    window.addEventListener("pointermove", this._onPointerMove);
+    window.addEventListener("pointerup", this._onPointerUp);
+    window.addEventListener("pointercancel", this._onPointerUp);
+  }
+
+  _onPointerMove(event) {
+    if (!this._drag) return;
+    const { index, which, day } = this._drag;
+    const seg = this._segs[index];
+    const row = this._rows[index];
+    if (!seg || !row) return;
+    const rect = row.track.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const absolute =
+      this._t0.getTime() + ratio * (this._t1.getTime() - this._t0.getTime());
+    const rounded =
+      Math.round((absolute - day.getTime()) / MIN / this._slot) * this._slot;
+    const start = minutesOf(seg.startHM);
+    const stop = minutesOf(seg.stopHM);
+    if (which === "left") {
+      seg.startHM = timeOf(clamp(rounded, 0, stop - this._slot));
+    } else {
+      seg.stopHM = timeOf(clamp(rounded, start + this._slot, 1439));
+    }
+    this._dirty = true;
+    this._renderRow(index);
+  }
+
+  _onPointerUp() {
+    this._drag = null;
+    window.removeEventListener("pointermove", this._onPointerMove);
+    window.removeEventListener("pointerup", this._onPointerUp);
+    window.removeEventListener("pointercancel", this._onPointerUp);
   }
 
   // -- actions -----------------------------------------------------------
 
   _collectWindows() {
     const windows = [];
-    for (const seg of this._segs) {
-      if (!seg.active || seg.mode === "off" || seg.stop <= seg.start) continue;
-      const power = seg.mode === "charge" ? -Math.abs(seg.power) : Math.abs(seg.power);
-      let cursor = new Date(seg.start);
-      while (cursor < seg.stop) {
-        const boundary = new Date(
-          Math.min(seg.stop.getTime(), startOfDay(addDays(cursor, 1)).getTime())
-        );
-        const stopTime = boundary.getHours() === 0 && boundary.getMinutes() === 0
-          ? "23:59:00"
-          : `${hm(boundary)}:00`;
-        windows.push({
-          start: `${hm(cursor)}:00`,
-          stop: stopTime,
-          power,
-          days: weekdayKey(cursor),
-        });
-        cursor = boundary;
-      }
+    for (let i = 0; i < this._count; i++) {
+      const seg = this._segs[i];
+      const mode = this._mode(seg);
+      if (!seg.enabled || mode === "off") continue;
+      const days = DAY_KEYS.filter((key) => seg.days.has(key));
+      if (!days.length) continue;
+      const power = mode === "charge" ? -seg.charge : seg.discharge;
+      windows.push({
+        start: `${fmtHM(seg.startHM)}:00`,
+        stop: `${fmtHM(seg.stopHM)}:00`,
+        power,
+        days: days.join(","),
+      });
     }
-    windows.sort((a, b) => {
-      const dayDiff = DAY_KEYS.indexOf(a.days) - DAY_KEYS.indexOf(b.days);
-      return dayDiff !== 0 ? dayDiff : a.start.localeCompare(b.start);
-    });
     return windows;
   }
 
@@ -717,22 +938,48 @@ class GoodweTouPlannerCard extends HTMLElement {
     }).catch((err) => this._showError(err));
   }
 
-  _cheapest() {
-    this._dirty = false;
-    this._callService("goodwe_tou", "set_cheapest_hours", {}).catch((err) =>
-      this._showError(err)
-    );
+  _calc() {
+    this._callServiceWithResponse("goodwe_tou", "calculate_cheapest_hours", {})
+      .then((response) => {
+        const windows = (response && response.windows) || [];
+        this._applyPlan(windows);
+        this._dirty = true;
+        this._render();
+      })
+      .catch((err) => this._showError(err));
+  }
+
+  _applyPlan(windows) {
+    for (const seg of this._segs) {
+      seg.enabled = false;
+      seg.charge = 100;
+      seg.discharge = 0;
+      seg.days = new Set();
+    }
+    windows.slice(0, MAX_WINDOWS).forEach((window, index) => {
+      const seg = this._segs[index];
+      if (!seg) return;
+      seg.startHM = parseHM(window.start);
+      seg.stopHM = parseHM(window.stop);
+      const power = Number(window.power) || 0;
+      if (power < 0) {
+        seg.charge = clamp(Math.round(-power), 1, 100);
+        seg.discharge = 0;
+        seg.enabled = true;
+      } else if (power > 0) {
+        seg.discharge = clamp(Math.round(power), 1, 100);
+        seg.charge = 0;
+        seg.enabled = true;
+      }
+      seg.days = expandDays(window.days || "all");
+    });
+    if (windows.length) {
+      this._count = clamp(windows.length, 1, MAX_WINDOWS);
+    }
   }
 
   _apply() {
     const windows = this._collectWindows();
-    if (windows.length > WINDOW_COUNT) {
-      this._showError(
-        `Te veel vensters (${windows.length}); de omvormer heeft er maximaal ${WINDOW_COUNT}. ` +
-          "Maak een venster korter of zet er een uit."
-      );
-      return;
-    }
     this._callService("goodwe_tou", "set_windows", { windows })
       .then(() => {
         this._dirty = false;
@@ -743,6 +990,31 @@ class GoodweTouPlannerCard extends HTMLElement {
   _callService(domain, service, data) {
     if (!this._hass) return Promise.resolve();
     return this._hass.callService(domain, service, data);
+  }
+
+  async _callServiceWithResponse(domain, service, data) {
+    const hass = this._hass;
+    if (!hass) throw new Error("Home Assistant is niet beschikbaar");
+    // The WebSocket command is the reliable way to ask for a service response.
+    if (typeof hass.callWS === "function") {
+      const result = await hass.callWS({
+        type: "call_service",
+        domain,
+        service,
+        service_data: data,
+        return_response: true,
+      });
+      return result && result.response !== undefined ? result.response : result;
+    }
+    const result = await hass.callService(
+      domain,
+      service,
+      data,
+      undefined,
+      true,
+      true
+    );
+    return result && result.response !== undefined ? result.response : result;
   }
 
   _showError(err) {
@@ -764,12 +1036,12 @@ window.customCards.push({
   type: "goodwe-tou-planner-card",
   name: "GoodWe Time-of-Use planner",
   description:
-    "Plan the four Time-of-Use windows from now until midnight tomorrow, with draggable charge/discharge windows.",
+    "Plan the Time-of-Use windows on a now-to-midnight-tomorrow timeline or a whole-week calendar, with separate charge/discharge sliders.",
   preview: false,
 });
 
 console.info(
-  "%c GOODWE-TOU-PLANNER %c v0.3.0 ",
+  "%c GOODWE-TOU-PLANNER %c v0.3.1 ",
   "background:#2e7d32;color:#fff;font-weight:bold",
   "background:#333;color:#fff"
 );

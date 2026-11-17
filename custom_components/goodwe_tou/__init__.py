@@ -10,7 +10,8 @@ from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -31,7 +32,7 @@ from .const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
 )
-from .coordinator import GoodweTouCoordinator
+from .coordinator import GoodweTouCoordinator, window_to_dict
 from .goodwe_udp import GoodweUdpClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ PLATFORMS = [
 ]
 
 SERVICE_SET_CHEAPEST_HOURS = "set_cheapest_hours"
+SERVICE_CALCULATE_CHEAPEST_HOURS = "calculate_cheapest_hours"
 SERVICE_SET_WINDOWS = "set_windows"
 
 _URL_PATH = "/goodwe_tou"
@@ -181,6 +183,25 @@ def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_SET_CHEAPEST_HOURS,
             _handle_set_cheapest_hours,
             schema=SERVICE_SET_CHEAPEST_HOURS_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CALCULATE_CHEAPEST_HOURS):
+
+        async def _handle_calculate_cheapest_hours(
+            call: ServiceCall,
+        ) -> dict[str, list[dict]]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+            plan = await coordinators[0].async_calculate_cheapest_hours(call.data)
+            return {"windows": [window_to_dict(window) for window in plan]}
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CALCULATE_CHEAPEST_HOURS,
+            _handle_calculate_cheapest_hours,
+            schema=SERVICE_SET_CHEAPEST_HOURS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
         )
 
     if not hass.services.has_service(DOMAIN, SERVICE_SET_WINDOWS):

@@ -56,6 +56,18 @@ _APPLY_ATTEMPTS = 3
 _READ_ATTEMPTS = 3
 
 
+def window_to_dict(window: TouWindow) -> dict[str, Any]:
+    """Serialise a window for a service response (see ``calculate_cheapest_hours``)."""
+    return {
+        "start": window.start.strftime("%H:%M"),
+        "stop": window.stop.strftime("%H:%M"),
+        "power": window.signed_power,
+        "days": window.days,
+        "mode": window.mode,
+        "enabled": window.enabled,
+    }
+
+
 class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Reads and writes the four Time-of-Use windows of the inverter."""
 
@@ -306,10 +318,16 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (TypeError, ValueError):
             return default
 
-    async def async_set_cheapest_hours(
+    def _plan_cheapest_hours(
         self, overrides: Mapping[str, Any] | None = None
     ) -> list[TouWindow]:
-        """Plan and apply the cheapest charging / most expensive discharging hours."""
+        """Work out the cheapest charging / most expensive discharging hours.
+
+        Pure computation: it reads the configured price/SoC/PV entities and
+        returns the plan, but never touches the inverter. Both the
+        ``set_cheapest_hours`` and ``calculate_cheapest_hours`` services are
+        built on this.
+        """
         overrides = overrides or {}
 
         def setting(key: str, default: Any) -> Any:
@@ -331,7 +349,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pv_remaining = self._float_state(pv_entity, 0.0)
 
         now = dt.datetime.now(dt.UTC).astimezone()
-        planned = plan_windows(
+        return plan_windows(
             slots,
             now,
             soc=soc,
@@ -341,7 +359,22 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             min_soc=min_soc,
             pv_credit_kwh=pv_remaining * pv_factor,
         )
-        plan = plan_registers(planned)
+
+    async def async_calculate_cheapest_hours(
+        self, overrides: Mapping[str, Any] | None = None
+    ) -> list[TouWindow]:
+        """Return the cheapest-hours plan without writing it to the inverter.
+
+        Used by the planner card, which fills its windows with the result so the
+        user can review and adjust the plan before applying it.
+        """
+        return self._plan_cheapest_hours(overrides)
+
+    async def async_set_cheapest_hours(
+        self, overrides: Mapping[str, Any] | None = None
+    ) -> list[TouWindow]:
+        """Plan and apply the cheapest charging / most expensive discharging hours."""
+        plan = plan_registers(self._plan_cheapest_hours(overrides))
 
         for number, window in zip(WINDOWS, plan, strict=True):
             self.data["windows"][number] = window

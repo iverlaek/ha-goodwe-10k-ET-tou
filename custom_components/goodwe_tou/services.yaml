@@ -82,6 +82,91 @@ set_cheapest_hours:
           max: 1
           step: 0.05
 
+calculate_cheapest_hours:
+  name: Calculate cheapest hours
+  description: >-
+    Work out the cheapest charging and most expensive discharging hours from the
+    price forecast and return them as a plan, without writing anything to the
+    inverter. The planner card uses this to fill its windows so you can review
+    and adjust the plan before applying it.
+  fields:
+    price_entity:
+      name: Price entity
+      description: >-
+        Entity whose `prices` attribute holds the quarter-hourly price
+        forecast. Defaults to the configured ENTSO-e price sensor.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    soc_entity:
+      name: Battery state of charge entity
+      description: Entity reporting the battery state of charge in percent.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    pv_entity:
+      name: PV forecast entity
+      description: >-
+        Entity reporting the remaining photovoltaic production for today in
+        kWh. Used to avoid buying energy the sun will provide for free.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+    capacity_kwh:
+      name: Battery capacity (kWh)
+      description: Usable battery capacity in kWh.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 200
+          step: 0.5
+          unit_of_measurement: kWh
+    power_kw:
+      name: Charge/discharge power (kW)
+      description: Maximum charge and discharge power in kW.
+      required: false
+      selector:
+        number:
+          min: 0.1
+          max: 100
+          step: 0.1
+          unit_of_measurement: kW
+    target_soc:
+      name: Target state of charge (%)
+      description: State of charge to charge up to and discharge down from.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    min_soc:
+      name: Minimum state of charge (%)
+      description: State of charge to stop discharging at.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    pv_factor:
+      name: PV credit factor
+      description: >-
+        Fraction (0-1) of the remaining PV forecast that is credited against
+        the energy that has to be bought from the grid.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+
 set_windows:
   name: Set windows
   description: >-

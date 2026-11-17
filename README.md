@@ -28,13 +28,15 @@ automate them from scripts, automations and dashboards.
   state of charge and the PV forecast into account.
 - A **bundled Lovelace card** (`custom:goodwe-tou-card`) that shows all four
   windows in one tile with red↔green sliders and a *Cheapest hours* button.
-- A **planner card** (`custom:goodwe-tou-planner-card`) that lays the four
-  windows on a single *now → midnight tomorrow* timeline with draggable
-  charge/discharge bars. Tomorrow is greyed out until tomorrow's prices are
-  known, overlapping windows are impossible, and a window that crosses midnight
-  is split into two inverter windows on apply.
+- A **planner card** (`custom:goodwe-tou-planner-card`) with two views: a
+  *now → midnight tomorrow* timeline with draggable bars, and a *whole-week*
+  calendar list of the seven days. Each window has a separate charge and
+  discharge slider, an active/inactive button and day chips. Tomorrow is greyed
+  out until tomorrow's prices are known and overlapping windows are impossible.
 - A `goodwe_tou.set_windows` service that writes an explicit plan (start, stop,
   signed power, days) in a single verified request — used by the planner card.
+- A `goodwe_tou.calculate_cheapest_hours` service that returns the cheapest-hours
+  plan **without writing** it, so a dashboard can show the plan before applying.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - Robust against a dongle that is **shared** with another integration: reads
@@ -130,30 +132,46 @@ A ready-to-paste dashboard is in
 
 ## The planner card
 
-`custom:goodwe-tou-planner-card` is a *planner* view for the same four windows.
-Instead of a fixed start/stop pair per window it draws one timeline that starts
-at the current quarter hour and ends at midnight at the end of tomorrow, and
-renders each window as a draggable bar on it:
+`custom:goodwe-tou-planner-card` is a *planner* for the same four windows.
 
-- drag the **left** and **right** handles to move a window's start and stop;
-- the **Laden / Ontladen** button toggles a window between charging and
-  discharging, `✕` turns it off, and the number next to it is the power
-  percentage;
-- the bars snap to quarter hours and **cannot overlap** — a handle stops at the
-  neighbouring window;
-- **tomorrow is greyed out** until the configured price entity exposes prices
-  for tomorrow (usually around 15:00);
-- **Goedkoopste uren** calls the integration's cheapest-hours planner;
+**Two views.** The buttons at the top switch between:
+
+- **Vandaag + morgen** (default) — a timeline from the current quarter hour to
+  midnight at the end of tomorrow. Each window that runs today and/or tomorrow is
+  drawn as a draggable bar; drag the **left** and **right** handles to move a
+  window's start and stop. Bars snap to quarter hours and **cannot overlap** — a
+  handle stops at the neighbouring window. **Tomorrow is greyed out** until the
+  configured price entity exposes prices for tomorrow (usually around 15:00).
+- **Hele week (7 dagen)** — a calendar list of the seven days, each showing the
+  windows that run on that day.
+
+**Every window** has its own row with:
+
+- an **Actief / Inactief** button — an inactive window is greyed out;
+- a **charge slider** and a **discharge slider** (0–100 %), with the percentage
+  shown next to each. The two are **mutually exclusive**: the inverter stores a
+  single signed power per window, so setting one clears the other;
+- a **start** and a **stop** time (a window never crosses midnight);
+- **day chips** (ma…zo).
+
+The number of windows in use is chosen with the **Aantal vensters** selector
+(1–4); the inverter has four windows in total.
+
+**Buttons at the bottom:**
+
+- **Lezen van omvormer** pulls the live schedule from the inverter;
+- **Optimale prijzen berekenen** calls `goodwe_tou.calculate_cheapest_hours`,
+  fills the rows with the plan and does **not** write anything — review it, then
+  press *Toepassen*;
 - **Toepassen** writes the whole plan at once through `goodwe_tou.set_windows`.
-  A bar that crosses midnight is split into two inverter windows (one ending at
-  `23:59`, one starting at `00:00`), because the inverter stores one window per
-  day.
 
 ```yaml
 type: custom:goodwe-tou-planner-card
 title: Laadplanning                                  # optional
 prefix: goodwe_time_of_use                           # optional
 price_entity: sensor.average_electricity_price       # optional, for the grey-out
+windows: 4                                           # optional, 1..4
+view: now                                            # optional, "now" | "week"
 slot_minutes: 15                                     # optional, timeline granularity
 ```
 
@@ -192,6 +210,32 @@ data:
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
 | `pv_factor` | `0.5` | Fraction of the PV forecast credited against grid charging |
+
+### Calculating without applying
+
+`goodwe_tou.calculate_cheapest_hours` takes the same options but **returns** the
+plan instead of writing it. It is what the planner card's *Optimale prijzen
+berekenen* button calls:
+
+```yaml
+action: goodwe_tou.calculate_cheapest_hours
+data:
+  price_entity: sensor.average_electricity_price
+response_variable: plan
+```
+
+The response is a list of windows, each with `start`, `stop`, `power` (signed),
+`days`, `mode` and `enabled`:
+
+```yaml
+windows:
+  - start: "02:00"
+    stop: "05:00"
+    power: -100
+    days: "mon,tue,wed,thu,fri,sat,sun"
+    mode: charge
+    enabled: true
+```
 
 ## Applying an explicit plan
 

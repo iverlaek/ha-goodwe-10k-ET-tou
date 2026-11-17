@@ -382,6 +382,63 @@ async def test_cheapest_hours_service(
 
 
 @pytest.mark.asyncio
+async def test_calculate_cheapest_hours_service_returns_without_writing(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The planner card fills its rows from this service without touching the inverter."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {
+            "time": (base + dt.timedelta(minutes=15 * i)).isoformat(),
+            "price": i / 100.0,
+        }
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "50")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    writes: list[tuple[int, int]] = []
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN,
+            "calculate_cheapest_hours",
+            {},
+            blocking=True,
+            return_response=True,
+        )
+        await hass.async_block_till_done()
+
+    assert response["windows"], response
+    first = response["windows"][0]
+    assert set(first) >= {"start", "stop", "power", "days", "mode", "enabled"}
+    assert any(window["power"] < 0 for window in response["windows"])
+    assert any(window["power"] > 0 for window in response["windows"])
+
+    # Nothing was written and the entities still show the inverter's own schedule.
+    assert writes == []
+    assert (
+        hass.states.get("number.goodwe_time_of_use_window_1_power").state == "-100.0"
+    )
+
+
+@pytest.mark.asyncio
 async def test_config_flow_success(hass: HomeAssistant):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
