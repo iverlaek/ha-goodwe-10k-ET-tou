@@ -274,6 +274,7 @@ data:
   soc_entity: sensor.battery_state_of_charge   # optional
   capacity_kwh: 24                             # optional
   power_kw: 7                                  # optional
+  min_soc: 20                                  # optional; discharge floor
 response_variable: forecast
 ```
 

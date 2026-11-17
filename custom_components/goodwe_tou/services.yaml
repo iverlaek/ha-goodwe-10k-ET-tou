@@ -220,3 +220,14 @@ forecast_soc:
           max: 100
           step: 0.1
           unit_of_measurement: kW
+    min_soc:
+      name: Minimum state of charge (%)
+      description: >-
+        Discharging stops here, so the forecast never drops below this value.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"

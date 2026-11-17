@@ -469,6 +469,8 @@ async def test_forecast_soc_service_returns_points(
     times = [point["time"] for point in points]
     assert times == sorted(times)
     assert all(0 <= point["soc"] <= 100 for point in points)
+    # Discharging stops at the configured minimum state of charge.
+    assert min(point["soc"] for point in points) >= 20.0
 
 
 @pytest.mark.asyncio

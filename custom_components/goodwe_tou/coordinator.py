@@ -392,6 +392,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
         power_kw = float(setting(CONF_POWER_KW, DEFAULT_POWER_KW))
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
+        min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
 
         soc = self._float_state(soc_entity, target_soc)
         windows = list(self.data["windows"].values())
@@ -407,6 +408,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc=soc,
             capacity_kwh=capacity_kwh,
             power_kw=power_kw,
+            min_soc=min_soc,
         )
 
     async def async_set_cheapest_hours(

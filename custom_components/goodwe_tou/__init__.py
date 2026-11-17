@@ -87,6 +87,9 @@ SERVICE_FORECAST_SOC_SCHEMA = vol.Schema(
         vol.Optional(CONF_POWER_KW): vol.All(
             vol.Coerce(float), vol.Range(min=0.1, max=100)
         ),
+        vol.Optional(CONF_MIN_SOC): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=100)
+        ),
     }
 )
 
