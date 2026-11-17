@@ -44,7 +44,9 @@
           "window_power": "Power of planned windows (%)",
           "recheck_minutes": "Re-check interval (minutes)",
           "log_size": "Activity log size (entries)",
-          "min_cell_voltage": "Low-cell stop threshold (mV, 0 = off)"
+          "min_cell_voltage": "Low-cell stop threshold (mV, 0 = off)",
+          "tibber_prices": "Expose Tibber day-ahead prices (price sensor)",
+          "tibber_home": "Tibber home name (empty = first/only home)"
         }
       }
     }
