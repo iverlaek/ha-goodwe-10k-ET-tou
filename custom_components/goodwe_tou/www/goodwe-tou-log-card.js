@@ -20,7 +20,7 @@
  *   limit: 200                                # optional, entries fetched
  */
 
-const CARD_VERSION = "0.6.2";
+const CARD_VERSION = "0.6.3";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
@@ -33,13 +33,6 @@ const ACTION_LABELS = {
   window_power: "Vermogen gewijzigd",
   window_days: "Dagen gewijzigd",
   eco: "ECO-modus",
-};
-
-const FIELD_LABELS = {
-  start: "start",
-  stop: "stop",
-  power: "vermogen",
-  days: "dagen",
 };
 
 const pad = (value) => String(value).padStart(2, "0");
@@ -64,18 +57,37 @@ const formatPower = (value) => {
   return "0% uit";
 };
 
+const formatAction = (value) => {
+  const n = Number(value) || 0;
+  if (n < 0) return "laden";
+  if (n > 0) return "ontladen";
+  return "uit";
+};
+
+const DAY_NL = {
+  mon: "ma",
+  tue: "di",
+  wed: "wo",
+  thu: "do",
+  fri: "vr",
+  sat: "za",
+  sun: "zo",
+};
+
 const formatDays = (text) => {
-  const value = String(text || "").toLowerCase();
+  const value = String(text || "").toLowerCase().trim();
   if (!value || value === "none" || value === "off") return "geen";
   if (value.includes("all") || value.includes("every")) return "elke dag";
   if (value.includes("weekday")) return "ma\u2013vr";
   if (value.includes("weekend")) return "za\u2013zo";
+  const parts = value.split(/[,\s]+/).filter(Boolean);
+  if (parts.length && parts.every((part) => DAY_NL[part])) {
+    return parts.map((part) => DAY_NL[part]).join(", ");
+  }
   return String(text);
 };
 
 const fieldLabel = (field) => {
-  const match = /^window_(\d+)_(\w+)$/.exec(String(field || ""));
-  if (match) return `Venster ${match[1]} \u00b7 ${FIELD_LABELS[match[2]] || match[2]}`;
   if (field === "eco_mode") return "ECO-modus";
   return String(field || "");
 };
@@ -127,6 +139,7 @@ const STYLES = `
   .changes { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
   .change { font-size: .78rem; color: var(--secondary-text-color); }
   .change .f { color: var(--primary-text-color); }
+  .change .act { color: var(--primary-text-color); }
   .change .old { text-decoration: line-through; opacity: .7; }
   .change .arrow { margin: 0 4px; }
   .change .new { color: var(--primary-color); font-weight: 600; }
@@ -197,7 +210,7 @@ class GoodweTouLogCard extends HTMLElement {
             <span class="seg" id="resultseg"></span>
           </div>
           <div class="filter">
-            <span class="flabel">Venster</span>
+            <span class="flabel">Nr</span>
             <span class="seg" id="windowseg"></span>
           </div>
         </div>
@@ -374,8 +387,8 @@ class GoodweTouLogCard extends HTMLElement {
     if (changes.length) {
       const box = document.createElement("div");
       box.className = "changes";
-      for (const change of changes) {
-        box.appendChild(this._renderChange(change));
+      for (const line of this._changeLines(changes, entry)) {
+        box.appendChild(line);
       }
       row.appendChild(box);
     }
@@ -390,11 +403,11 @@ class GoodweTouLogCard extends HTMLElement {
         line.className = "win";
         const label = document.createElement("span");
         label.className = "wlabel";
-        label.textContent = `Venster ${window.n}: `;
+        label.textContent = `${window.n}: `;
         line.appendChild(label);
         line.appendChild(
           document.createTextNode(
-            `${window.start}\u2013${window.stop} \u00b7 ${formatPower(window.power)} \u00b7 ${formatDays(window.days)}`
+            `${formatAction(window.power)} ${window.start}\u2013${window.stop} \u00b7 ${formatDays(window.days)}`
           )
         );
         box.appendChild(line);
@@ -418,6 +431,80 @@ class GoodweTouLogCard extends HTMLElement {
     }
 
     return row;
+  }
+
+  _changeLines(changes, entry) {
+    const windows = entry.windows || [];
+    const grouped = new Map();
+    const lines = [];
+    const plain = [];
+    for (const change of changes) {
+      const match = /^window_(\d+)_(\w+)$/.exec(String(change.field || ""));
+      if (!match) {
+        plain.push(change);
+        continue;
+      }
+      const n = Number(match[1]);
+      if (!grouped.has(n)) {
+        const line = document.createElement("div");
+        line.className = "change";
+        grouped.set(n, { line, fields: {} });
+        lines.push(line);
+      }
+      grouped.get(n).fields[match[2]] = change;
+    }
+    for (const [n, group] of grouped) {
+      this._fillWindowChange(group.line, n, group.fields, windows);
+    }
+    for (const change of plain) {
+      lines.push(this._renderChange(change));
+    }
+    return lines;
+  }
+
+  _fillWindowChange(line, n, fields, windows) {
+    const win = windows.find((window) => Number(window.n) === n) || {};
+    const startC = fields.start;
+    const stopC = fields.stop;
+    const powerC = fields.power;
+    const daysC = fields.days;
+
+    const newStart = startC ? startC.new : win.start;
+    const oldStart = startC ? startC.old : newStart;
+    const newStop = stopC ? stopC.new : win.stop;
+    const oldStop = stopC ? stopC.old : newStop;
+    const power = powerC ? powerC.new : win.power;
+
+    line.appendChild(this._valueSpan("f", `${n}: `));
+    line.appendChild(this._valueSpan("act", `${formatAction(power)} `));
+
+    if (startC || stopC) {
+      line.appendChild(this._valueSpan("old", `${oldStart}\u2013${oldStop}`));
+      line.appendChild(this._valueSpan("arrow", "\u2192"));
+      line.appendChild(this._valueSpan("new", `${newStart}\u2013${newStop}`));
+    } else if (powerC) {
+      line.appendChild(this._valueSpan("old", formatAction(powerC.old)));
+      line.appendChild(this._valueSpan("arrow", "\u2192"));
+      line.appendChild(this._valueSpan("new", formatAction(powerC.new)));
+    }
+
+    if (daysC) {
+      if (startC || stopC || powerC) {
+        line.appendChild(this._valueSpan("arrow", " \u00b7 "));
+      }
+      line.appendChild(this._valueSpan("old", formatDays(daysC.old)));
+      line.appendChild(this._valueSpan("arrow", "\u2192"));
+      line.appendChild(this._valueSpan("new", formatDays(daysC.new)));
+    }
+
+    return line;
+  }
+
+  _valueSpan(className, text) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    return span;
   }
 
   _renderChange(change) {

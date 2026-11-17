@@ -229,6 +229,11 @@ was written and whether the inverter **confirmed** it — or, in red, why it did
 not (for example a read-back mismatch or a timeout). An automatic re-check
 (`auto_replan`) also shows **why** the plan was changed.
 
+A changed window is shown on **one line** — its number, the action (laden /
+ontladen / uit) and the time range before and after, e.g.
+`1: laden 03:45–04:30 → 01:30–05:45`. The windows that were written are listed
+below it as `1: laden 01:30–05:45 · wo`.
+
 Filters at the top narrow the list by **result** (Alles / Gelukt / Mislukt) and
 by **window** (Alle / 1–4). The card fetches the full log through the
 `goodwe_tou.get_activity` service, so it can show more entries than fit in the
