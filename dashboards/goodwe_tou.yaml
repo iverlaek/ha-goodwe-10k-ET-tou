@@ -29,8 +29,13 @@ views:
         title: Status
         show_header_toggle: false
         entities:
+          - entity: button.goodwe_time_of_use_auto_eco_mode
+            name: Auto/ECO Mode (automatisch)
+          - entity: button.goodwe_time_of_use_manual_override
+            name: Manual override (pauzeer automatisering)
           - entity: switch.goodwe_time_of_use_eco_mode
             name: ECO mode (Time-of-Use active)
+          - entity: sensor.goodwe_time_of_use_laagste_celspanning
           - entity: sensor.battery_state_of_charge
           - entity: sensor.battery_power
           - entity: sensor.average_electricity_price

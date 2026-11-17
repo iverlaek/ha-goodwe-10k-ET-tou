@@ -534,6 +534,40 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ],
         )
 
+    async def async_set_auto_eco(self) -> None:
+        """Put the inverter back into fully automatic ECO/Time-of-Use mode.
+
+        Turns ECO work mode on (when it is not already) and re-enables the
+        automatic re-check, so the integration keeps the plan optimal on its own.
+        """
+        self.auto_replan_enabled = True
+        if self.data.get("work_mode") != ECO_WORK_MODE:
+            await self.async_set_eco(True)
+        self._record(
+            "mode",
+            reason=(
+                "Auto/ECO-modus ingeschakeld: de omvormer staat in ECO en de "
+                "automatische herberekening houdt het plan zelf actueel."
+            ),
+        )
+
+    async def async_set_manual_override(self) -> None:
+        """Pause the automatic re-check and leave the windows as they are.
+
+        The windows already on the inverter keep running in ECO mode; only the
+        quarter-hour re-check stops, so manual edits are not overwritten. Press
+        Auto/ECO mode to resume the automation.
+        """
+        self.auto_replan_enabled = False
+        self._record(
+            "mode",
+            reason=(
+                "Handmatige override: automatische herberekening gepauzeerd. De "
+                "vensters op de omvormer blijven staan; kies Auto/ECO-modus om de "
+                "automatisering te hervatten."
+            ),
+        )
+
     # -- cheapest hours ----------------------------------------------------
 
     def _option(self, key: str, default: Any) -> Any:

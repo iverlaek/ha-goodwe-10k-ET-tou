@@ -20,7 +20,7 @@
  *   limit: 200                                # optional, entries fetched
  */
 
-const CARD_VERSION = "0.7.3";
+const CARD_VERSION = "0.7.4";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
@@ -33,6 +33,7 @@ const ACTION_LABELS = {
   window_power: "Vermogen gewijzigd",
   window_days: "Dagen gewijzigd",
   eco: "ECO-modus",
+  mode: "Auto/ECO of override",
 };
 
 const pad = (value) => String(value).padStart(2, "0");

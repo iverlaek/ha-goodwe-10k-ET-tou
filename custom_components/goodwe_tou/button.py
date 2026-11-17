@@ -23,6 +23,8 @@ async def async_setup_entry(
             TouReadButton(coordinator),
             TouApplyButton(coordinator),
             TouCheapestHoursButton(coordinator),
+            TouAutoEcoButton(coordinator),
+            TouManualOverrideButton(coordinator),
         ]
     )
 
@@ -60,3 +62,27 @@ class TouCheapestHoursButton(GoodweTouEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_set_cheapest_hours()
+
+
+class TouAutoEcoButton(GoodweTouEntity, ButtonEntity):
+    """Run the inverter fully automatically: ECO mode plus the re-check."""
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator, "auto_eco", "Auto/ECO Mode", "mdi:leaf-circle"
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_auto_eco()
+
+
+class TouManualOverrideButton(GoodweTouEntity, ButtonEntity):
+    """Pause the automation and keep the windows that are on the inverter."""
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator, "manual_override", "Manual override", "mdi:hand-back-right"
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_manual_override()

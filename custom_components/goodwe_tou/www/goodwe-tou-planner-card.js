@@ -40,7 +40,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.7.3";
+const CARD_VERSION = "0.7.4";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -122,13 +122,9 @@ const STYLES = `
   ha-card { padding: 16px; }
   .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .title { font-size: 1.1rem; font-weight: 600; color: var(--primary-text-color); }
-  .eco { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--secondary-text-color); }
-  .switch { position: relative; width: 44px; height: 24px; flex: none; }
-  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
-  .switch .track { position: absolute; inset: 0; border-radius: 12px; background: var(--disabled-color, #9e9e9e); transition: background .15s; pointer-events: none; }
-  .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
-  .switch input:checked + .track { background: var(--primary-color); }
-  .switch input:checked + .track::after { transform: translateX(20px); }
+  .modes { display: flex; gap: 6px; }
+  .modebtn { font: inherit; font-size: .78rem; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--secondary-text-color); cursor: pointer; }
+  .modebtn.active { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
 
   .week { display: flex; gap: 4px; margin-bottom: 8px; }
   .daybtn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 0 4px; border: 1px solid var(--divider-color); border-radius: 8px; background: transparent; color: var(--secondary-text-color); font: inherit; font-size: .74rem; cursor: pointer; }
@@ -274,7 +270,7 @@ class GoodweTouPlannerCard extends HTMLElement {
       this._priceSlots = this._detectPrices();
     }
     if (!this._dirty) this._readWindows();
-    this._renderEco();
+    this._renderModes();
     this._render();
   }
 
@@ -322,13 +318,10 @@ class GoodweTouPlannerCard extends HTMLElement {
       <ha-card>
         <div class="head">
           <div class="title"></div>
-          <label class="eco">
-            <span>ECO</span>
-            <span class="switch">
-              <input type="checkbox" id="eco">
-              <span class="track"></span>
-            </span>
-          </label>
+          <div class="modes">
+            <button id="auto_eco" class="modebtn" type="button">Auto/ECO Mode</button>
+            <button id="manual" class="modebtn" type="button">Manual override</button>
+          </div>
         </div>
         <div class="week" id="week"></div>
         <div class="hint" id="hint"></div>
@@ -389,10 +382,16 @@ class GoodweTouPlannerCard extends HTMLElement {
       this._rows.push(this._makeRow(this._rowsEl, n));
     }
 
-    const ecoEl = root.querySelector("#eco");
-    ecoEl.addEventListener("change", () =>
-      this._callService("switch", ecoEl.checked ? "turn_on" : "turn_off", {
-        entity_id: this._entity("switch", "eco_mode"),
+    const autoEcoEl = root.querySelector("#auto_eco");
+    autoEcoEl.addEventListener("click", () =>
+      this._callService("button", "press", {
+        entity_id: this._entity("button", "auto_eco_mode"),
+      }).catch((err) => this._showError(err))
+    );
+    const manualEl = root.querySelector("#manual");
+    manualEl.addEventListener("click", () =>
+      this._callService("button", "press", {
+        entity_id: this._entity("button", "manual_override"),
       }).catch((err) => this._showError(err))
     );
 
@@ -858,12 +857,20 @@ class GoodweTouPlannerCard extends HTMLElement {
     `;
   }
 
-  _renderEco() {
-    const ecoEl = this.shadowRoot.querySelector("#eco");
-    if (!ecoEl) return;
-    if (this.shadowRoot.activeElement === ecoEl) return;
-    const state = this._state(this._entity("switch", "eco_mode"));
-    ecoEl.checked = !!state && state.state === "on";
+  _renderModes() {
+    const autoEl = this.shadowRoot.querySelector("#auto_eco");
+    const manualEl = this.shadowRoot.querySelector("#manual");
+    if (!autoEl || !manualEl) return;
+    const eco = this._state(this._entity("switch", "eco_mode"));
+    const auto = this._state(this._entity("switch", "auto_herberekening"));
+    const ecoOn = !!eco && eco.state === "on";
+    const autoOn = !!auto && auto.state === "on";
+    // "Auto/ECO Mode" is active only when the inverter runs ECO *and* the
+    // re-check is on; "Manual override" is active when the re-check is paused.
+    autoEl.classList.toggle("active", ecoOn && autoOn);
+    manualEl.classList.toggle("active", !autoOn);
+    autoEl.title = "ECO-modus aan en automatische herberekening actief";
+    manualEl.title = "Automatische herberekening pauzeren; vensters blijven staan";
   }
 
   // -- editing -----------------------------------------------------------

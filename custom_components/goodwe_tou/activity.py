@@ -33,6 +33,7 @@ ACTIONS = (
     "eco",
     "export_limit",
     "guard",
+    "mode",
 )
 
 

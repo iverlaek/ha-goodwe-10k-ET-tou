@@ -852,6 +852,95 @@ async def test_auto_replan_is_paused_by_the_switch(
 
 
 @pytest.mark.asyncio
+async def test_auto_eco_button_enables_eco_and_the_replan(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """Auto/ECO Mode puts the inverter in ECO and resumes the automation."""
+    state = {"work_mode": 0}
+    writes: list[tuple[int, int]] = []
+
+    def _read(offset: int, count: int):
+        if offset == 47000:
+            return [state["work_mode"]]
+        if offset == 47509:
+            return [1, 10000]
+        if offset == 37022:
+            return [3300, 3300]
+        assert offset == BASE and count == 16
+        return list(store)
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        if register == 47000:
+            state["work_mode"] = value
+        elif BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        writes.clear()
+
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.goodwe_time_of_use_auto_eco_mode"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert (47000, 3) in writes  # ECO work mode
+    assert (
+        hass.states.get("switch.goodwe_time_of_use_auto_herberekening").state == "on"
+    )
+    latest = hass.states.get(
+        "sensor.goodwe_time_of_use_activity_log"
+    ).attributes["entries"][0]
+    assert latest["action"] == "mode"
+
+
+@pytest.mark.asyncio
+async def test_manual_override_button_pauses_the_automation(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """Manual override stops the re-check and leaves the windows alone."""
+    writes: list[tuple[int, int]] = []
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(
+            GoodweUdpClient,
+            "write_register",
+            side_effect=lambda register, value: writes.append((register, value)),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        writes.clear()
+
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.goodwe_time_of_use_manual_override"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    # Nothing is written to the inverter: the windows on it keep running.
+    assert writes == []
+    assert (
+        hass.states.get("switch.goodwe_time_of_use_auto_herberekening").state == "off"
+    )
+    latest = hass.states.get(
+        "sensor.goodwe_time_of_use_activity_log"
+    ).attributes["entries"][0]
+    assert latest["action"] == "mode"
+
+
+@pytest.mark.asyncio
 async def test_setup_creates_a_cell_voltage_sensor(
     hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
 ):
