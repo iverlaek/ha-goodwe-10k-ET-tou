@@ -745,6 +745,56 @@ async def test_calculate_cheapest_hours_returns_reasons(
 
 
 @pytest.mark.asyncio
+async def test_plan_sensor_exposes_the_reasons_behind_the_windows(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The status card reads the planner's reasoning from this sensor."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {"time": (base + dt.timedelta(minutes=15 * i)).isoformat(), "price": i / 100.0}
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "40")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        sensor = hass.states.get("sensor.goodwe_time_of_use_plan")
+        assert sensor is not None
+        # Nothing has been planned yet, so there is nothing to explain.
+        assert sensor.state == "0"
+        assert sensor.attributes["reasons"] == []
+
+        await hass.services.async_call(DOMAIN, "set_cheapest_hours", {}, blocking=True)
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_plan")
+    assert sensor.state != "0"
+    reasons = sensor.attributes["reasons"]
+    assert reasons
+    assert {reason["window"] for reason in reasons} == set(
+        range(1, len(sensor.attributes["windows"]) + 1)
+    )
+    for reason in reasons:
+        assert reason["mode"] in ("charge", "discharge")
+        assert reason["text"]
+    assert sensor.attributes["summary"]
+    assert sensor.attributes["notes"]
+    assert sensor.attributes["planned_at"]
+
+
+@pytest.mark.asyncio
 async def test_auto_replan_switch_defaults_on(
     hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
 ):

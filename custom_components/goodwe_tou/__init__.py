@@ -246,6 +246,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = GoodweTouCoordinator(hass, entry, client)
 
     await coordinator.async_load_activity()
+    await coordinator.async_load_plan()
     await coordinator.async_config_entry_first_refresh()
 
     # The Tibber price sensor has its own 15-minute coordinator so the price card

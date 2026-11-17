@@ -117,6 +117,7 @@ With the default device name the entities are:
 | `button.goodwe_time_of_use_apply_to_inverter` | Apply the schedule to the inverter (verified) |
 | `button.goodwe_time_of_use_set_cheapest_hours` | Plan + apply the cheapest hours |
 | `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
+| `sensor.goodwe_time_of_use_plan` | Last computed plan: number of windows, with `reasons` (per window) and `notes` as attributes |
 | `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
@@ -534,7 +535,8 @@ To show the state of the automation next to your battery card, drop this
 [`card-mod`](https://github.com/thomasloven/lovelace-card-mod) frontend cards.
 The first card shows **Auto/ECO vs Handmatig** (and whether ECO mode is on); the
 second derives the **next planned window** and **tomorrow's programming** live
-from the four window entities, so no extra sensor is needed.
+from the four window entities, and adds the planner's **reason per window** from
+the `sensor.goodwe_time_of_use_plan` sensor, so no extra helper is needed.
 
 ```yaml
 type: vertical-stack
@@ -574,6 +576,7 @@ cards:
       {% set cur = now_.hour * 60 + now_.minute %}
       {% set today = dns[now_.weekday()] %}
       {% set tmr = dns[(now_.weekday() + 1) % 7] %}
+      {% set reasons = state_attr('sensor.goodwe_time_of_use_plan', 'reasons') or [] %}
       {% set ns = namespace(act=None, td=None, tdk=None, tmr=None, tmrk=None, mlist=[]) %}
       {% for i in range(1, 5) %}
         {% set start = states('time.goodwe_time_of_use_window_' ~ i ~ '_start') %}
@@ -588,7 +591,8 @@ cards:
           {% set on_today = days == 'all' or today in days.split(',') %}
           {% set on_tmr = days == 'all' or tmr in days.split(',') %}
           {% set act = 'laden' if power < 0 else 'ontladen' %}
-          {% set win = {'act': act, 'start': start[:5], 'stop': stop[:5]} %}
+          {% set why = (reasons | selectattr('window', 'eq', i) | map(attribute='text') | list | first) | default('', true) %}
+          {% set win = {'act': act, 'start': start[:5], 'stop': stop[:5], 'why': why} %}
           {% if on_today and smin <= cur and cur < emin %}{% set ns.act = win %}{% endif %}
           {% if on_today and smin > cur and (ns.tdk is none or smin < ns.tdk) %}
             {% set ns.td = win %}{% set ns.tdk = smin %}
@@ -604,7 +608,7 @@ cards:
       {% elif ns.tmr %}⏱️ **Volgende: {{ ns.tmr.act }}** {{ ns.tmr.start }}–{{ ns.tmr.stop }} (morgen)
       {% else %}⏱️ Geen gepland venster
       {% endif %}
-      {% if ns.mlist %}📅 **Morgen ({{ nls[tmr] }}):** {% for w in ns.mlist | sort(attribute='start') %}{{ w.act }} {{ w.start }}–{{ w.stop }}{% if not loop.last %} · {% endif %}{% endfor %}
+      {% if ns.mlist %}📅 **Morgen ({{ nls[tmr] }})**{% for w in ns.mlist | sort(attribute='start') %}<br>{{ w.act }} {{ w.start }}–{{ w.stop }}{% if w.why %}<br><span style="font-size:12.5px;opacity:.65">{{ w.why }}</span>{% endif %}{% endfor %}
       {% else %}📅 **Morgen ({{ nls[tmr] }}):** geen vensters
       {% endif %}
 ```

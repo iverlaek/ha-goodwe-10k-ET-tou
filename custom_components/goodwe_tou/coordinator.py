@@ -186,11 +186,15 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "export_limit": None,
             "min_cell_voltage": None,
             "activity": [],
+            "plan": None,
         }
         self._activity: list[dict[str, Any]] = []
         self._activity_store: Store = Store(
             hass, 1, f"{DOMAIN}_activity_{entry.entry_id}"
         )
+        #: The reasoning behind the last computed plan (for the status card).
+        self._plan: dict[str, Any] | None = None
+        self._plan_store: Store = Store(hass, 1, f"{DOMAIN}_plan_{entry.entry_id}")
         #: Whether the quarter-hour re-check may write a new plan by itself.
         self.auto_replan_enabled: bool = bool(
             entry.options.get(CONF_AUTO_REPLAN, DEFAULT_AUTO_REPLAN)
@@ -210,6 +214,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if isinstance(stored, list):
             self._activity = [entry for entry in stored if isinstance(entry, dict)]
             trim(self._activity, self._log_size())
+        self._publish(self.data)
+
+    async def async_load_plan(self) -> None:
+        """Load the persisted plan reasoning (if any) into memory."""
+        try:
+            stored = await self._plan_store.async_load()
+        except Exception:  # pragma: no cover - corrupt/unreadable store
+            _LOGGER.warning("Could not load the plan reasoning", exc_info=True)
+            return
+        if isinstance(stored, dict):
+            self._plan = stored
         self._publish(self.data)
 
     def _schedule_save(self) -> None:
@@ -254,6 +269,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _publish(self, data: dict[str, Any]) -> None:
         """Push fresh data to the entities, including the current activity log."""
         data["activity"] = list(self._activity)
+        data["plan"] = self._plan
         self.async_set_updated_data(data)
 
     # -- device access -----------------------------------------------------
@@ -334,6 +350,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except GoodweError as err:
             raise UpdateFailed(str(err)) from err
         data["activity"] = list(self._activity)
+        data["plan"] = self._plan
         return data
 
     async def _write(self, mapping: Mapping[int, int]) -> None:
@@ -759,6 +776,25 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             power_percent=window_power,
         )
 
+    def _remember_plan(self, plan: Plan) -> None:
+        """Remember the reasons behind a computed plan, for the status card.
+
+        The windows on the inverter only carry ``start``/``stop``/``power``/``days``;
+        the *why* lives in the planner. Storing the last computed plan here lets
+        the dashboard show the reason next to each window without recomputing it.
+        """
+        self._plan = {
+            "windows": [window_to_dict(window) for window in plan.windows],
+            "reasons": plan.reason_texts(),
+            "summary": plan.summary,
+            "notes": list(plan.notes),
+            "planned_at": dt.datetime.now(dt.UTC)
+            .astimezone()
+            .isoformat(timespec="seconds"),
+        }
+        self._plan_store.async_delay_save(lambda: self._plan, 2.0)
+        self._publish(self.data)
+
     async def async_calculate_cheapest_hours(
         self, overrides: Mapping[str, Any] | None = None
     ) -> Plan:
@@ -825,6 +861,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> Plan:
         """Plan and apply the cheapest charging / most expensive discharging hours."""
         plan = self._plan_cheapest_hours(overrides)
+        self._remember_plan(plan)
         after = dict(zip(WINDOWS, plan_registers(plan.windows), strict=True))
         changes = window_changes(dict(self.data["windows"]), after)
         targets = [window_summary(number, after[number]) for number in WINDOWS]
@@ -967,6 +1004,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         target = plan_registers(plan.windows)
         if self._same_windows(current, target):
+            # Nothing to write, but the plan still explains the windows that are
+            # already on the inverter, so keep its reasons for the status card.
+            self._remember_plan(plan)
             return None
 
         reason = self._replan_reason(current, plan, slots)

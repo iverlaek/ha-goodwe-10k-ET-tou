@@ -31,6 +31,7 @@ async def async_setup_entry(
     entities: list[SensorEntity] = [
         TouActivitySensor(coordinator),
         TouCellVoltageSensor(coordinator),
+        TouPlanSensor(coordinator),
     ]
     if coordinator.price_coordinator is not None:
         entities.append(TouPricesSensor(coordinator, coordinator.price_coordinator))
@@ -90,6 +91,38 @@ class TouCellVoltageSensor(GoodweTouEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {"threshold": self.coordinator.min_cell_voltage_threshold}
+
+
+class TouPlanSensor(GoodweTouEntity, SensorEntity):
+    """The last computed plan, with the reason behind every window.
+
+    The four windows on the inverter only say *what* runs when; the planner also
+    works out *why*. This sensor carries that reasoning (``reasons`` keyed by the
+    1-based window number) plus the plan's summary and notes, so the dashboard can
+    show the reason next to each window without recomputing the plan. The state is
+    how many windows the plan filled in.
+    """
+
+    _unrecorded_attributes = frozenset({"windows", "reasons", "notes"})
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(coordinator, "plan", "Plan", "mdi:calendar-clock")
+
+    @property
+    def native_value(self) -> int:
+        plan = self.coordinator.data.get("plan") or {}
+        return len(plan.get("windows", []))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        plan = self.coordinator.data.get("plan") or {}
+        return {
+            "windows": plan.get("windows", []),
+            "reasons": plan.get("reasons", []),
+            "summary": plan.get("summary"),
+            "notes": plan.get("notes", []),
+            "planned_at": plan.get("planned_at"),
+        }
 
 
 class TouPricesSensor(CoordinatorEntity[TibberPriceCoordinator], SensorEntity):
