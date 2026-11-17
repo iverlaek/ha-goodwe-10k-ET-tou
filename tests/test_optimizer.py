@@ -271,6 +271,40 @@ def test_build_plan_export_cap_limits_discharge():
     assert discharge_minutes(capped) < discharge_minutes(uncapped)
 
 
+def test_build_plan_discharges_on_today_and_tomorrow():
+    """The export cap is per day, so the rest of today is planned as well.
+
+    With a single shared budget the four most expensive quarter hours all fall on
+    the expensive day, leaving today grey in the planner. A per-day budget gives
+    both days their own discharge window.
+    """
+    start = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    prices = [0.05] * 96 + [0.30] * 96  # today cheap, tomorrow expensive
+    slots = _slots_from_prices(start, prices)
+    now = start + dt.timedelta(hours=12)
+    plan = optimizer.build_plan(
+        slots,
+        now,
+        soc=100,
+        capacity_kwh=24,
+        discharge_power_kw=6,
+        min_soc=20,
+        export_hours=1.0,
+    )
+    discharge_days = {w.days for w in plan.windows if w.mode == "discharge"}
+    assert discharge_days == {"mon", "tue"}
+    # Each day is capped at the one-hour export limit.
+    for day in ("mon", "tue"):
+        minutes = sum(
+            (w.stop.hour * 60 + w.stop.minute) - (w.start.hour * 60 + w.start.minute)
+            for w in plan.windows
+            if w.mode == "discharge" and w.days == day
+        )
+        assert minutes <= 60
+    # The reason names the day it discharges on.
+    assert any("dinsdag" in reason.text for reason in plan.reasons)
+
+
 def _slots_from_prices(start: dt.datetime, prices, step_minutes: int = 15):
     return [
         optimizer.PriceSlot(start + dt.timedelta(minutes=step_minutes * i), price)

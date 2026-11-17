@@ -189,7 +189,11 @@ run on it. On the timeline:
   *Activeren*;
 - a window that has **already passed today** is greyed, tagged **afgelopen** and
   moved to the bottom of the list. A window that does not run on the selected day
-  is dimmed and tagged *niet op <dag>*.
+  is dimmed and tagged *niet op <dag>*;
+- the **price graph** above the band shows the quarter-hour prices for the
+  selected day as bars, with the price on the **left axis in whole cents**
+  (5¢, 10¢, 15¢ … and −5¢ when prices go negative). The 0¢ line is drawn a bit
+  darker so you can see at a glance when the price is negative.
 
 Only the **order on screen** changes; the windows keep the number they have in
 the inverter, and *Toepassen* writes every window back to its own number.
@@ -250,8 +254,10 @@ cheapest charging hours and the most expensive discharging hours.
 The house's standby consumption and the GoodWe's power limits are taken into
 account: the battery charges at up to `charge_kw` (6 kW, AC + DC together) and
 discharges at up to `discharge_kw` (6 kW over AC). Discharging is capped at
-`export_hours` at full power, so a bad solar period cannot drain the battery so
-early that the house has to buy expensive power at the peak.
+`export_hours` at full power **per day**, so the rest of today gets its own
+discharge window instead of the whole budget being spent on tomorrow's peak, and
+a bad solar period cannot drain the battery so early that the house has to buy
+expensive power at the peak.
 
 Charging is only planned when it actually pays off. Every kWh taken from the grid
 is grossed up for the round-trip losses of the battery (`rte`, 85% by default),
@@ -289,7 +295,7 @@ data:
 | `charge_kw` | `6` | Maximum charge power (GoodWe limit, AC + DC) |
 | `discharge_kw` | `6` | Maximum discharge power (GoodWe limit over AC) |
 | `standby_kw` | `1.2` | House standby consumption the battery covers in ECO mode |
-| `export_hours` | `1` | How long the battery may export at full power before it is kept for the house; `0` disables the cap |
+| `export_hours` | `1` | How long the battery may export at full power **per day** before it is kept for the house; `0` disables the cap |
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
 | `pv_factor` | `0.5` | Fraction of the PV forecast counted as a discount on the energy the house would buy |

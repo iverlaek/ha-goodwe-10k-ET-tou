@@ -40,7 +40,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.7.0";
+const CARD_VERSION = "0.7.1";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -143,8 +143,16 @@ const STYLES = `
   .ruler .tick.major { top: 3px; opacity: 1; }
   .ruler .tlabel { position: absolute; top: 0; transform: translateX(-50%); font-size: .62rem; color: var(--secondary-text-color); }
 
-  .prices { position: relative; height: 32px; margin: 2px 0 6px; border-radius: 6px; background: var(--secondary-background-color); overflow: hidden; }
+  .prices { position: relative; height: 128px; margin: 2px 0 6px; display: grid; grid-template-columns: 34px 1fr; gap: 4px; }
+  .prices .yaxis { position: relative; }
+  .prices .ylab { position: absolute; right: 2px; transform: translateY(50%); font-size: .62rem; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .prices .plot { position: relative; border-radius: 6px; background: var(--secondary-background-color); overflow: hidden; }
+  .prices .grid { position: absolute; left: 0; right: 0; height: 1px; background: var(--divider-color); opacity: .45; }
+  .prices .grid.zero { opacity: .9; background: var(--secondary-text-color); }
   .pbar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; opacity: .85; }
+  ha-card.with-axis .ruler,
+  ha-card.with-axis .band,
+  ha-card.with-axis .wtrack { margin-left: 38px; }
 
   .band { position: relative; height: 16px; border-radius: 6px; background: var(--secondary-background-color); overflow: hidden; margin-bottom: 4px; }
   .band .seg { position: absolute; top: 0; bottom: 0; }
@@ -325,7 +333,10 @@ class GoodweTouPlannerCard extends HTMLElement {
         <div class="week" id="week"></div>
         <div class="hint" id="hint"></div>
         <div class="ruler" id="ruler"></div>
-        <div class="prices" id="prices"></div>
+        <div class="prices" id="prices">
+          <div class="yaxis" id="yaxis"></div>
+          <div class="plot" id="priceplot"></div>
+        </div>
         <div class="band" id="band"></div>
         <div class="bandcap" id="bandcap"></div>
         <div class="rows" id="rows"></div>
@@ -343,6 +354,9 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._hintEl = root.querySelector("#hint");
     this._rulerEl = root.querySelector("#ruler");
     this._pricesEl = root.querySelector("#prices");
+    this._axisEl = root.querySelector("#yaxis");
+    this._plotEl = root.querySelector("#priceplot");
+    this._cardEl = root.querySelector("ha-card");
     this._bandEl = root.querySelector("#band");
     this._bandcapEl = root.querySelector("#bandcap");
     this._rowsEl = root.querySelector("#rows");
@@ -627,6 +641,8 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   _renderPrices() {
     const host = this._pricesEl;
+    const plot = this._plotEl;
+    const axis = this._axisEl;
     const dayStart = this._dayStart();
     const next = addDays(dayStart, 1);
     const visible = (this._priceSlots || []).filter(
@@ -634,24 +650,55 @@ class GoodweTouPlannerCard extends HTMLElement {
     );
     if (!visible.length) {
       host.style.display = "none";
+      if (this._cardEl) this._cardEl.classList.remove("with-axis");
       return;
     }
-    host.style.display = "block";
-    host.innerHTML = "";
+    host.style.display = "grid";
+    if (this._cardEl) this._cardEl.classList.add("with-axis");
+    plot.innerHTML = "";
+    axis.innerHTML = "";
+
+    // Absolute scale in euros, anchored on 0 so the left axis reads in whole
+    // cents (5, 10, 15, ... and -5 when prices go negative).
     const prices = visible.map((slot) => slot.price);
     const low = Math.min(...prices);
     const high = Math.max(...prices);
+    const step = 0.05;
+    const axisLow = Math.min(0, Math.floor(low / step + 1e-9) * step);
+    let axisHigh = Math.ceil(high / step - 1e-9) * step;
+    if (axisHigh <= axisLow) axisHigh = axisLow + step;
+    const range = axisHigh - axisLow;
+    const yPct = (value) => ((value - axisLow) / range) * 100;
+
+    for (
+      let cents = Math.round(axisLow * 100);
+      cents <= Math.round(axisHigh * 100);
+      cents += 5
+    ) {
+      const bottom = yPct(cents / 100);
+      const label = document.createElement("div");
+      label.className = "ylab";
+      label.style.bottom = `${bottom}%`;
+      label.textContent = `${cents}\u00a2`;
+      axis.appendChild(label);
+
+      const grid = document.createElement("div");
+      grid.className = `grid${cents === 0 ? " zero" : ""}`;
+      grid.style.bottom = `${bottom}%`;
+      plot.appendChild(grid);
+    }
+
     for (const slot of visible) {
-      const ratio = high > low ? (slot.price - low) / (high - low) : 0.5;
       const minutes = slot.t.getHours() * 60 + slot.t.getMinutes();
+      const ratio = range > 0 ? (slot.price - axisLow) / range : 0.5;
       const bar = document.createElement("div");
       bar.className = "pbar";
       bar.style.left = `${(minutes / DAY_MINUTES) * 100}%`;
       bar.style.width = `${Math.max(0.2, (this._slot / DAY_MINUTES) * 100)}%`;
-      bar.style.height = `${18 + ratio * 82}%`;
+      bar.style.height = `${Math.max(1, yPct(slot.price))}%`;
       bar.style.background = `hsl(${(1 - ratio) * 120}, 62%, 45%)`;
       bar.title = `${hm(slot.t)} \u00b7 ${slot.price.toFixed(3)}`;
-      host.appendChild(bar);
+      plot.appendChild(bar);
     }
   }
 

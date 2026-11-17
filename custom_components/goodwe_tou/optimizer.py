@@ -45,6 +45,16 @@ from .const import (
 )
 from .registers import TouWindow, mask_to_days
 
+_NL_WEEKDAYS = (
+    "maandag",
+    "dinsdag",
+    "woensdag",
+    "donderdag",
+    "vrijdag",
+    "zaterdag",
+    "zondag",
+)
+
 
 @dataclass(frozen=True)
 class PriceSlot:
@@ -213,6 +223,45 @@ def _select_indices(
     return [index for index, _ in ordered[:count]]
 
 
+def _select_discharge_indices(
+    remaining: Sequence[tuple[int, PriceSlot]],
+    *,
+    discharge_per_slot: float,
+    total_energy_kwh: float,
+    per_day_energy_kwh: float | None,
+) -> list[int]:
+    """Pick the most expensive slots to discharge in.
+
+    Without a per-day budget the whole horizon shares one budget, so the most
+    expensive hours win no matter which day they fall on. When
+    ``per_day_energy_kwh`` is given the budget is applied to every calendar day
+    separately, so the rest of today gets its own discharge window instead of the
+    entire budget being spent on tomorrow. Days are filled chronologically (today
+    first) and the total is still capped by ``total_energy_kwh``.
+    """
+    if total_energy_kwh <= 0 or discharge_per_slot <= 0 or not remaining:
+        return []
+    if per_day_energy_kwh is None:
+        count = min(len(remaining), math.ceil(total_energy_kwh / discharge_per_slot))
+        return _select_indices(remaining, count, cheapest=False)
+
+    by_day: dict[dt.date, list[tuple[int, PriceSlot]]] = {}
+    for index, slot in remaining:
+        by_day.setdefault(slot.time.date(), []).append((index, slot))
+
+    picked: list[int] = []
+    left = total_energy_kwh
+    for day in sorted(by_day):
+        if left <= 0:
+            break
+        budget = min(per_day_energy_kwh, left)
+        count = min(len(by_day[day]), math.ceil(budget / discharge_per_slot))
+        day_indices = _select_indices(by_day[day], count, cheapest=False)
+        picked.extend(day_indices)
+        left -= len(day_indices) * discharge_per_slot
+    return picked
+
+
 def _run_stats(
     run: tuple[int, int],
     slots: Sequence[PriceSlot],
@@ -296,13 +345,11 @@ def build_plan(
     export_cap_kwh: float | None = None
     if export_hours is not None and float(export_hours) > 0:
         export_cap_kwh = discharge_power_kw * float(export_hours)
-    discharge_energy = (
-        available_kwh if export_cap_kwh is None else min(available_kwh, export_cap_kwh)
-    )
 
     budget = max(1, int(max_windows))
     charge_windows = max(0, min(int(charge_windows), budget))
     discharge_windows = max(0, min(int(discharge_windows), budget))
+    per_day_discharge = export_cap_kwh is not None
 
     indexed = list(enumerate(future))
 
@@ -371,12 +418,12 @@ def build_plan(
 
     used = set(charge_idx)
     remaining = [(index, slot) for index, slot in indexed if index not in used]
-    n_discharge = (
-        min(len(remaining), math.ceil(discharge_energy / discharge_per_slot))
-        if discharge_energy > 0
-        else 0
+    discharge_idx = _select_discharge_indices(
+        remaining,
+        discharge_per_slot=discharge_per_slot,
+        total_energy_kwh=available_kwh,
+        per_day_energy_kwh=export_cap_kwh,
     )
-    discharge_idx = _select_indices(remaining, n_discharge, cheapest=False)
     discharge_runs = (
         _merge_runs(_group_runs(discharge_idx), discharge_windows)
         if discharge_idx and discharge_windows
@@ -415,9 +462,9 @@ def build_plan(
         )
     if export_cap_kwh is not None and available_kwh > export_cap_kwh:
         notes.append(
-            f"Ontladen is beperkt tot {export_cap_kwh:.1f} kWh (max "
-            f"{float(export_hours):.1f} uur terugleveren op vol vermogen) zodat de "
-            f"batterij niet te vroeg leegloopt; er is {available_kwh:.1f} kWh "
+            f"Ontladen is per dag beperkt tot {export_cap_kwh:.1f} kWh (max "
+            f"{float(export_hours):.1f} uur terugleveren op vol vermogen per dag) "
+            f"zodat de batterij niet te vroeg leegloopt; er is {available_kwh:.1f} kWh "
             f"beschikbaar boven {min_soc:.0f}%."
         )
     elif available_kwh > 0:
@@ -461,12 +508,17 @@ def build_plan(
             )
         else:
             revenue = stats["energy_kwh"] * stats["avg_price"]
+            when = (
+                _NL_WEEKDAYS[future[run[0]].time.weekday()]
+                if per_day_discharge
+                else "de komende periode"
+            )
             reasons.append(
                 PlanReason(
                     window=number,
                     mode=mode,
                     text=(
-                        f"Duurste {stats['minutes']:.0f} min van de komende periode "
+                        f"Duurste {stats['minutes']:.0f} min van {when} "
                         f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
                         f"{power_kw:.0f} kW ontlaad je hier {stats['energy_kwh']:.1f} kWh; "
                         f"dat levert ongeveer \u20ac{revenue:.2f} op."
