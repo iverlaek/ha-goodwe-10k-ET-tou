@@ -526,6 +526,102 @@ automation:
 An example dashboard that uses the bundled card is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml).
 
+### A compact status card
+
+To show the state of the automation next to your battery card, drop this
+`vertical-stack` anywhere on a dashboard. It needs the HACS
+[`button-card`](https://github.com/custom-cards/button-card) and (optionally)
+[`card-mod`](https://github.com/thomasloven/lovelace-card-mod) frontend cards.
+The first card shows **Auto/ECO vs Handmatig** and the lowest cell voltage
+(coloured against the guard threshold); the second derives the **next planned
+window** live from the four window entities, so no extra sensor is needed.
+
+```yaml
+type: vertical-stack
+cards:
+  - type: custom:button-card
+    entity: sensor.goodwe_time_of_use_laagste_celspanning
+    name: GoodWe Time-of-Use
+    show_name: true
+    show_state: true
+    show_icon: true
+    icon: |
+      [[[
+        var v = parseFloat(entity.state);
+        var thr = parseFloat(entity.attributes.threshold) || 0;
+        if (!isNaN(v) && thr > 0 && v <= thr) return 'mdi:battery-alert-variant-outline';
+        return 'mdi:battery-heart';
+      ]]]
+    state_display: |
+      [[[
+        var v = parseFloat(entity.state);
+        var thr = parseFloat(entity.attributes.threshold) || 0;
+        var auto = (hass.states['switch.goodwe_time_of_use_auto_herberekening'] || {}).state;
+        var eco = (hass.states['switch.goodwe_time_of_use_eco_mode'] || {}).state;
+        var label = auto === 'on' ? 'Auto/ECO' : 'Handmatig';
+        var sub = auto === 'on' ? (eco === 'on' ? 'ECO-modus aan' : 'ECO-modus uit')
+                                : 'automatische herberekening gepauzeerd';
+        var vtxt = isNaN(v) ? '—' : Math.round(v) + ' mV';
+        var vcolor = '#4caf50';
+        if (thr > 0 && !isNaN(v)) { if (v <= thr) vcolor = '#f44336'; else if (v <= thr + 100) vcolor = '#ff9800'; }
+        return `<div style="text-align:center;line-height:1.35">
+          <span style="font-size:32px;font-weight:900;color:#2196f3">${label}</span>
+          <div style="font-size:13px;opacity:.8;margin-top:4px">${sub}</div>
+          <div style="font-size:19px;margin-top:10px;font-weight:700;color:${vcolor}">laagste cel ${vtxt}</div>
+        </div>`;
+      ]]]
+    triggers_update:
+      - sensor.goodwe_time_of_use_laagste_celspanning
+      - switch.goodwe_time_of_use_auto_herberekening
+      - switch.goodwe_time_of_use_eco_mode
+
+  - type: markdown
+    content: |
+      {% set dns = ['mon','tue','wed','thu','fri','sat','sun'] %}
+      {% set now_ = now() %}
+      {% set cur = now_.hour * 60 + now_.minute %}
+      {% set today = dns[now_.weekday()] %}
+      {% set tmr = dns[(now_.weekday() + 1) % 7] %}
+      {% set ns = namespace(act=None, td=None, tdk=None, tmr=None, tmrk=None) %}
+      {% for i in range(1, 5) %}
+        {% set start = states('time.goodwe_time_of_use_window_' ~ i ~ '_start') %}
+        {% set stop = states('time.goodwe_time_of_use_window_' ~ i ~ '_stop') %}
+        {% set power = states('number.goodwe_time_of_use_window_' ~ i ~ '_power') | float(0) %}
+        {% set days = states('text.goodwe_time_of_use_window_' ~ i ~ '_days') %}
+        {% set sp = start.split(':') %}
+        {% set ep = stop.split(':') %}
+        {% if power != 0 and sp | length >= 2 and ep | length >= 2 %}
+          {% set smin = sp[0] | int(0) * 60 + sp[1] | int(0) %}
+          {% set emin = ep[0] | int(0) * 60 + ep[1] | int(0) %}
+          {% set on_today = days == 'all' or today in days.split(',') %}
+          {% set on_tmr = days == 'all' or tmr in days.split(',') %}
+          {% set act = 'laden' if power < 0 else 'ontladen' %}
+          {% set win = {'act': act, 'start': start[:5], 'stop': stop[:5]} %}
+          {% if on_today and smin <= cur and cur < emin %}{% set ns.act = win %}{% endif %}
+          {% if on_today and smin > cur and (ns.tdk is none or smin < ns.tdk) %}
+            {% set ns.td = win %}{% set ns.tdk = smin %}
+          {% endif %}
+          {% if on_tmr and (ns.tmrk is none or smin < ns.tmrk) %}
+            {% set ns.tmr = win %}{% set ns.tmrk = smin %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {% if ns.act %}🔋 **Nu: {{ ns.act.act }}** {{ ns.act.start }}–{{ ns.act.stop }}
+      {% elif ns.td %}⏱️ **Volgende: {{ ns.td.act }}** {{ ns.td.start }}–{{ ns.td.stop }} (vandaag)
+      {% elif ns.tmr %}⏱️ **Volgende: {{ ns.tmr.act }}** {{ ns.tmr.start }}–{{ ns.tmr.stop }} (morgen)
+      {% else %}⏱️ Geen gepland venster
+      {% endif %}
+```
+
+The `markdown` card re-renders whenever one of the entities it reads changes; the
+window times themselves rarely change, so add a hidden reference to a
+frequently-updating entity (for example the voltage sensor) if you want the
+*Nu* / *Volgende* label to roll over within a minute:
+
+```yaml
+<span style="display:none">{{ states('sensor.goodwe_time_of_use_laagste_celspanning') }}</span>
+```
+
 ## Register map
 
 See [`docs/registers.md`](docs/registers.md) for the full register layout and the
