@@ -49,7 +49,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.3.3";
+const CARD_VERSION = "0.4.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -161,6 +161,12 @@ const STYLES = `
   .row { padding: 10px 0; border-top: 1px solid var(--divider-color); transition: opacity .15s; }
   .row:first-child { border-top: none; }
   .row.off { opacity: .5; }
+  .row.collapsed { padding: 5px 0; opacity: .6; }
+  .row.collapsed .rowtop { margin-bottom: 0; }
+  .row.collapsed .track,
+  .row.collapsed .times,
+  .row.collapsed .cols,
+  .row.collapsed .days { display: none; }
   .rowtop { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .wlabel { font-weight: 600; font-size: .88rem; color: var(--primary-text-color); }
   .badge { font-size: .78rem; font-variant-numeric: tabular-nums; padding: 2px 9px; border-radius: 10px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
@@ -625,6 +631,7 @@ class GoodweTouPlannerCard extends HTMLElement {
 
     row.row.style.display = i < this._count ? "" : "none";
     row.row.classList.toggle("off", !seg.enabled);
+    row.row.classList.toggle("collapsed", !seg.enabled);
 
     row.badge.textContent = !seg.enabled
       ? "inactief"
@@ -635,7 +642,7 @@ class GoodweTouPlannerCard extends HTMLElement {
           : "geen vermogen";
     row.badge.className = `badge ${seg.enabled && mode !== "off" ? mode : ""}`;
 
-    row.activeBtn.textContent = seg.enabled ? "Actief" : "Inactief";
+    row.activeBtn.textContent = seg.enabled ? "Actief" : "Activeren";
     row.activeBtn.classList.toggle("on", seg.enabled);
 
     const showCharge = seg.enabled && mode === "charge";

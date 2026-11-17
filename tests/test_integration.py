@@ -439,6 +439,39 @@ async def test_calculate_cheapest_hours_service_returns_without_writing(
 
 
 @pytest.mark.asyncio
+async def test_forecast_soc_service_returns_points(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The week card draws its forecast part from this service."""
+    hass.states.async_set("sensor.battery_state_of_charge", "50")
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write_to(store)),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN,
+            "forecast_soc",
+            {},
+            blocking=True,
+            return_response=True,
+        )
+        await hass.async_block_till_done()
+
+    points = response["points"]
+    assert len(points) > 1
+    assert set(points[0]) == {"time", "soc"}
+    # It starts at the battery's current state of charge.
+    assert points[0]["soc"] == 50.0
+    times = [point["time"] for point in points]
+    assert times == sorted(times)
+    assert all(0 <= point["soc"] <= 100 for point in points)
+
+
+@pytest.mark.asyncio
 async def test_config_flow_success(hass: HomeAssistant):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}

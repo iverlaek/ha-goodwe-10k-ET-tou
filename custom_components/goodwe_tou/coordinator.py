@@ -45,7 +45,7 @@ from .goodwe_udp import (
     GoodweRejectedError,
     GoodweUdpClient,
 )
-from .optimizer import plan_registers, plan_windows, slots_from_prices
+from .optimizer import forecast_soc, plan_registers, plan_windows, slots_from_prices
 from .registers import TouWindow, base_for, decode_window, valid_block, window_registers
 
 _LOGGER = logging.getLogger(__name__)
@@ -369,6 +369,45 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         user can review and adjust the plan before applying it.
         """
         return self._plan_cheapest_hours(overrides)
+
+    async def async_forecast_soc(
+        self, overrides: Mapping[str, Any] | None = None
+    ) -> list[tuple[dt.datetime, float]]:
+        """Project the battery state of charge for the *current* windows.
+
+        Starts at the battery's current state of charge and walks forward to the
+        end of tomorrow, following the Time-of-Use windows that are configured on
+        the inverter right now. This is what the week card draws after the
+        measured part of its graph: the state of charge you get if you leave the
+        plan as it is.
+        """
+        overrides = overrides or {}
+
+        def setting(key: str, default: Any) -> Any:
+            if key in overrides and overrides[key] is not None:
+                return overrides[key]
+            return self._option(key, default)
+
+        soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
+        capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
+        power_kw = float(setting(CONF_POWER_KW, DEFAULT_POWER_KW))
+        target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
+
+        soc = self._float_state(soc_entity, target_soc)
+        windows = list(self.data["windows"].values())
+
+        now = dt.datetime.now(dt.UTC).astimezone()
+        end = (now + dt.timedelta(days=2)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return forecast_soc(
+            windows,
+            now,
+            end,
+            soc=soc,
+            capacity_kwh=capacity_kwh,
+            power_kw=power_kw,
+        )
 
     async def async_set_cheapest_hours(
         self, overrides: Mapping[str, Any] | None = None

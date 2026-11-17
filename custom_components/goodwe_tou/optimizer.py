@@ -236,6 +236,61 @@ def plan_windows(
     return windows[:budget]
 
 
+def forecast_soc(
+    windows: Sequence[TouWindow],
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    soc: float,
+    capacity_kwh: float = DEFAULT_CAPACITY_KWH,
+    power_kw: float = DEFAULT_POWER_KW,
+    step_minutes: int = SLOT_MINUTES,
+    min_soc: float = 0.0,
+    max_soc: float = 100.0,
+) -> list[tuple[dt.datetime, float]]:
+    """Project the battery state of charge if ``windows`` are followed.
+
+    Walks from ``start`` to ``end`` in ``step_minutes`` steps. For every step the
+    energy each active window moves is added: a charge window raises the state of
+    charge, a discharge window lowers it (the power percentage is a fraction of
+    ``power_kw``). The result is clamped to ``[min_soc, max_soc]``. Returns
+    ``(moment, soc)`` pairs, including the value at ``start``.
+
+    Pure (no Home Assistant imports), so the card's forecast is easy to test.
+    Windows are day-local, so a window never crosses midnight.
+    """
+    capacity_kwh = max(0.1, float(capacity_kwh))
+    power_kw = max(0.0, float(power_kw))
+    step = dt.timedelta(minutes=max(1, int(step_minutes)))
+
+    current = min(max_soc, max(min_soc, float(soc)))
+    points: list[tuple[dt.datetime, float]] = [(start, current)]
+
+    moment = start
+    while moment < end:
+        boundary = min(moment + step, end)
+        delta = 0.0
+        day = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        weekday_bit = 1 << day.weekday()
+        for window in windows:
+            if not window.enabled or not (window.mask & weekday_bit):
+                continue
+            w_start = day.replace(hour=window.start.hour, minute=window.start.minute)
+            w_stop = day.replace(hour=window.stop.hour, minute=window.stop.minute)
+            overlap_start = max(moment, w_start)
+            overlap_stop = min(boundary, w_stop)
+            if overlap_stop <= overlap_start:
+                continue
+            hours = (overlap_stop - overlap_start).total_seconds() / 3600.0
+            energy_kwh = -window.signed_power / 100.0 * power_kw * hours
+            delta += energy_kwh / capacity_kwh * 100.0
+        current = min(max_soc, max(min_soc, current + delta))
+        moment = boundary
+        points.append((moment, current))
+
+    return points
+
+
 def plan_registers(
     windows: Sequence[TouWindow], window_count: int = len(WINDOWS)
 ) -> list[TouWindow]:

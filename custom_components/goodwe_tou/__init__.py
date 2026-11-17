@@ -48,6 +48,7 @@ PLATFORMS = [
 SERVICE_SET_CHEAPEST_HOURS = "set_cheapest_hours"
 SERVICE_CALCULATE_CHEAPEST_HOURS = "calculate_cheapest_hours"
 SERVICE_SET_WINDOWS = "set_windows"
+SERVICE_FORECAST_SOC = "forecast_soc"
 
 _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
@@ -73,6 +74,18 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_PV_FACTOR): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=1)
+        ),
+    }
+)
+
+SERVICE_FORECAST_SOC_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_SOC_ENTITY): cv.entity_id,
+        vol.Optional(CONF_CAPACITY_KWH): vol.All(
+            vol.Coerce(float), vol.Range(min=1, max=200)
+        ),
+        vol.Optional(CONF_POWER_KW): vol.All(
+            vol.Coerce(float), vol.Range(min=0.1, max=100)
         ),
     }
 )
@@ -219,4 +232,28 @@ def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_SET_WINDOWS,
             _handle_set_windows,
             schema=SERVICE_SET_WINDOWS_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_FORECAST_SOC):
+
+        async def _handle_forecast_soc(
+            call: ServiceCall,
+        ) -> dict[str, list[dict]]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+            points = await coordinators[0].async_forecast_soc(call.data)
+            return {
+                "points": [
+                    {"time": moment.isoformat(), "soc": round(value, 1)}
+                    for moment, value in points
+                ]
+            }
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_FORECAST_SOC,
+            _handle_forecast_soc,
+            schema=SERVICE_FORECAST_SOC_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
         )

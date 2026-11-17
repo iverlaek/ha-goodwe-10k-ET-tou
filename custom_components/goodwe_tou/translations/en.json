@@ -49,6 +49,10 @@
     "set_windows": {
       "name": "Set windows",
       "description": "Write an explicit list of Time-of-Use windows to the inverter (start, stop, signed power and days)."
+    },
+    "forecast_soc": {
+      "name": "Forecast state of charge",
+      "description": "Project the battery state of charge from now until the end of tomorrow, following the Time-of-Use windows that are currently on the inverter. Returns a list of time/soc points."
     }
   }
 }

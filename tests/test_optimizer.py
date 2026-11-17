@@ -124,3 +124,60 @@ def test_plan_registers_pads_to_four():
     for window in padded[len(windows) :]:
         assert window.mode == "off"
         assert window.days == "none"
+
+
+def test_forecast_soc_follows_windows():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    windows = [
+        optimizer.TouWindow(
+            start=dt.time(2, 0), stop=dt.time(4, 0), mode="charge", power=100, days="mon"
+        ),
+        optimizer.TouWindow(
+            start=dt.time(18, 0),
+            stop=dt.time(20, 0),
+            mode="discharge",
+            power=100,
+            days="mon",
+        ),
+    ]
+    points = optimizer.forecast_soc(
+        windows, day, day + dt.timedelta(days=1), soc=50, capacity_kwh=10, power_kw=5
+    )
+    values = dict(points)
+    assert values[day] == 50
+    assert values[dt.datetime(2026, 11, 16, 2, 0)] == 50
+    assert values[dt.datetime(2026, 11, 16, 4, 0)] == 100  # charged to full
+    assert values[dt.datetime(2026, 11, 16, 18, 0)] == 100
+    assert values[dt.datetime(2026, 11, 16, 20, 0)] == 0  # discharged empty
+
+
+def test_forecast_soc_respects_days():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    window = optimizer.TouWindow(
+        start=dt.time(0, 0),
+        stop=dt.time(23, 59),
+        mode="discharge",
+        power=100,
+        days="tue",
+    )
+    points = optimizer.forecast_soc(
+        [window], day, day + dt.timedelta(days=1), soc=80, capacity_kwh=10, power_kw=5
+    )
+    assert all(value == 80 for _, value in points)
+
+
+def test_forecast_soc_clamps_to_min_soc():
+    day = dt.datetime(2026, 11, 16, 0, 0)
+    window = optimizer.TouWindow(
+        start=dt.time(1, 0), stop=dt.time(5, 0), mode="discharge", power=100, days="mon"
+    )
+    points = optimizer.forecast_soc(
+        [window],
+        day,
+        day + dt.timedelta(hours=6),
+        soc=30,
+        capacity_kwh=10,
+        power_kw=5,
+        min_soc=20,
+    )
+    assert min(value for _, value in points) == 20

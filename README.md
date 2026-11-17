@@ -26,19 +26,26 @@ automate them from scripts, automations and dashboards.
   that plan the four windows from an electricity price forecast: charge in the
   cheapest hours and discharge in the most expensive ones, taking the current
   state of charge and the PV forecast into account.
-- A **bundled Lovelace card** (`custom:goodwe-tou-card`) that shows all four
-  windows in one tile with red↔green sliders and a *Cheapest hours* button.
+- A **bundled card** (`custom:goodwe-tou-card`) — a **read-only** overview: a
+  calendar of the current week (ma…zo) with the windows that run on each day, and
+  below it a **battery state-of-charge graph** that shows the measured SoC for the
+  last `hours_back` hours and continues with the **forecast** SoC (if the plan on
+  the inverter is followed) until the end of tomorrow.
 - A **planner card** (`custom:goodwe-tou-planner-card`) with two views: a
   *now → midnight tomorrow* timeline with draggable bars at the very top, and a
   *whole-week* calendar list of the seven days. Each window has a single power
   field that sits in a **Laden** column (left) or an **Ontladen** column (right);
-  clicking the empty cell moves it to the other column. Tomorrow stays greyed out
-  — with a warning triangle — until tomorrow's prices are known, and overlapping
-  windows are impossible.
+  clicking the empty cell moves it to the other column. Inactive windows collapse
+  to one thin grey line so the active ones stand together. Tomorrow stays greyed
+  out — with a warning triangle — until tomorrow's prices are known, and
+  overlapping windows are impossible.
 - A `goodwe_tou.set_windows` service that writes an explicit plan (start, stop,
   signed power, days) in a single verified request — used by the planner card.
 - A `goodwe_tou.calculate_cheapest_hours` service that returns the cheapest-hours
   plan **without writing** it, so a dashboard can show the plan before applying.
+- A `goodwe_tou.forecast_soc` service that projects the battery state of charge
+  from now until the end of tomorrow, following the windows that are on the
+  inverter right now — used by the bundled card's graph.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - Robust against a dongle that is **shared** with another integration: reads
@@ -117,19 +124,30 @@ off. The integration handles the sign for you.
 
 ## The bundled card
 
-The integration ships a Lovelace card that puts all four windows in a single
-tile: start/stop time pickers, a red↔green slider per window, weekday chips and
-**Read** / **Cheapest hours** / **Apply** buttons. It is served at
-`/goodwe_tou/goodwe-tou-card.js` and loaded automatically, so you only have to
-add it to a dashboard:
+`custom:goodwe-tou-card` is a **read-only** overview of the schedule and the
+battery:
+
+- a **calendar of the current week** (ma…zo) listing the windows that run on each
+  day, with their time range and charge/discharge percentage; today is highlighted;
+- below it a **battery state-of-charge graph**: the *measured* SoC (solid line) for
+  the last `hours_back` hours, continuing with the *forecast* SoC (dashed orange)
+  until the end of tomorrow. The forecast follows the windows that are on the
+  inverter right now, so it shows what you get if you leave the plan as it is.
+
+It has no sliders, buttons or switches — editing happens in the planner card. It
+is served at `/goodwe_tou/goodwe-tou-card.js` and loaded automatically, so you only
+have to add it to a dashboard:
 
 ```yaml
 type: custom:goodwe-tou-card
-title: GoodWe Time-of-Use        # optional; " (Version x.y.z)" is appended
-prefix: goodwe_time_of_use       # optional entity-id prefix
+title: GoodWe Time-of-Use                     # optional; " (Version x.y.z)" is appended
+prefix: goodwe_time_of_use                    # optional entity-id prefix
+soc_entity: sensor.battery_state_of_charge    # optional, for the graph
+hours_back: 24                                # optional, measured hours shown
 ```
 
-A ready-to-paste dashboard is in
+The graph needs the recorder (it reads history through the HA API) and the
+`goodwe_tou.forecast_soc` service. A ready-to-paste dashboard is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml).
 
 ## The planner card
@@ -151,7 +169,9 @@ A ready-to-paste dashboard is in
 
 **Every window** has its own row with:
 
-- an **Actief / Inactief** button — an inactive window is greyed out;
+- an **Actief / Activeren** button — an inactive window collapses to one thin
+  grey line (so the active windows stand together); press *Activeren* to expand
+  and use it again;
 - one **power field** (0–100 %), shown in the column that matches the window's
   direction: **Laden** on the left, **Ontladen** on the right. The empty cell in
   the other column is clickable — clicking it moves the field there. The inverter
@@ -240,6 +260,33 @@ windows:
     days: "mon,tue,wed,thu,fri,sat,sun"
     mode: charge
     enabled: true
+```
+
+## Forecasting the state of charge
+
+`goodwe_tou.forecast_soc` projects the battery state of charge from now until the
+end of tomorrow, following the Time-of-Use windows that are currently on the
+inverter. It is what the bundled card draws after the measured part of its graph:
+
+```yaml
+action: goodwe_tou.forecast_soc
+data:
+  soc_entity: sensor.battery_state_of_charge   # optional
+  capacity_kwh: 24                             # optional
+  power_kw: 7                                  # optional
+response_variable: forecast
+```
+
+The response is a list of `{time, soc}` points, starting at the battery's current
+state of charge:
+
+```yaml
+points:
+  - time: "2026-11-17T13:30:00+01:00"
+    soc: 77.0
+  - time: "2026-11-17T13:45:00+01:00"
+    soc: 77.0
+  # …
 ```
 
 ## Applying an explicit plan
