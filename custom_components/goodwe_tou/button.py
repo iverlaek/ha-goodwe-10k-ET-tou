@@ -25,6 +25,8 @@ async def async_setup_entry(
             TouCheapestHoursButton(coordinator),
             TouAutoEcoButton(coordinator),
             TouManualOverrideButton(coordinator),
+            TouManualChargeButton(coordinator),
+            TouManualDischargeButton(coordinator),
         ]
     )
 
@@ -33,7 +35,14 @@ class TouReadButton(GoodweTouEntity, ButtonEntity):
     """Read the current schedule from the inverter."""
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(coordinator, "read", "Read from inverter", "mdi:download")
+        super().__init__(
+            coordinator,
+            "read",
+            coordinator._t("entity.read"),
+            "mdi:download",
+            domain="button",
+            object_id="read_from_inverter",
+        )
 
     async def async_press(self) -> None:
         await self.coordinator.async_read()
@@ -43,7 +52,14 @@ class TouApplyButton(GoodweTouEntity, ButtonEntity):
     """Write every window to the inverter."""
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(coordinator, "apply", "Apply to inverter", "mdi:upload")
+        super().__init__(
+            coordinator,
+            "apply",
+            coordinator._t("entity.apply"),
+            "mdi:upload",
+            domain="button",
+            object_id="apply_to_inverter",
+        )
 
     async def async_press(self) -> None:
         await self.coordinator.async_apply()
@@ -56,8 +72,10 @@ class TouCheapestHoursButton(GoodweTouEntity, ButtonEntity):
         super().__init__(
             coordinator,
             "cheapest_hours",
-            "Set cheapest hours",
+            coordinator._t("entity.cheapest_hours"),
             "mdi:cash-clock",
+            domain="button",
+            object_id="set_cheapest_hours",
         )
 
     async def async_press(self) -> None:
@@ -69,7 +87,12 @@ class TouAutoEcoButton(GoodweTouEntity, ButtonEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
         super().__init__(
-            coordinator, "auto_eco", "Auto/ECO Mode", "mdi:leaf-circle"
+            coordinator,
+            "auto_eco",
+            coordinator._t("entity.auto_eco"),
+            "mdi:leaf-circle",
+            domain="button",
+            object_id="auto_eco_mode",
         )
 
     async def async_press(self) -> None:
@@ -81,8 +104,47 @@ class TouManualOverrideButton(GoodweTouEntity, ButtonEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
         super().__init__(
-            coordinator, "manual_override", "Manual override", "mdi:hand-back-right"
+            coordinator,
+            "manual_override",
+            coordinator._t("entity.manual_override"),
+            "mdi:hand-back-right",
+            domain="button",
+            object_id="manual_override",
         )
 
     async def async_press(self) -> None:
         await self.coordinator.async_set_manual_override()
+
+
+class TouManualChargeButton(GoodweTouEntity, ButtonEntity):
+    """Force the manual window to charge (press again to switch it off)."""
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "manual_charge",
+            coordinator._t("entity.manual_charge"),
+            "mdi:battery-arrow-up",
+            domain="button",
+            object_id="manual_charge",
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_manual_mode("charge")
+
+
+class TouManualDischargeButton(GoodweTouEntity, ButtonEntity):
+    """Force the manual window to discharge (press again to switch it off)."""
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "manual_discharge",
+            coordinator._t("entity.manual_discharge"),
+            "mdi:battery-arrow-down",
+            domain="button",
+            object_id="manual_discharge",
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_set_manual_mode("discharge")

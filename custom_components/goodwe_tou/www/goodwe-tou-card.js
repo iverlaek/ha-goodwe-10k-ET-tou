@@ -20,26 +20,68 @@
  *   prefix: goodwe_time_of_use                    # optional entity-id prefix
  *   soc_entity: sensor.battery_state_of_charge    # optional, for the graph
  *   hours_back: 24                                # optional, measured hours shown
+ *   language: en                                  # optional, overrides the language
  */
 
-const CARD_VERSION = "0.7.5";
+const CARD_VERSION = "1.0.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
 const HOURS_BACK_DEFAULT = 24;
 const WINDOW_COUNT = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-const DAY_LABELS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
-const DAY_FULL = [
-  "Maandag",
-  "Dinsdag",
-  "Woensdag",
-  "Donderdag",
-  "Vrijdag",
-  "Zaterdag",
-  "Zondag",
-];
 const SVG_NS = "http://www.w3.org/2000/svg";
 const CHART_HEIGHT = 190;
+
+// Everything the card says, per language. The Dutch table mirrors the original
+// card text exactly; the English table is the translation. A value may be a
+// function when it takes an argument (a window number, a percentage).
+const LANGS = {
+  nl: {
+    title: "GoodWe Time-of-Use",
+    socTitle: "Batterij-SoC",
+    measured: "gemeten",
+    forecast: "voorspeld",
+    dayLabels: ["ma", "di", "wo", "do", "vr", "za", "zo"],
+    windowN: (n) => `Venster ${n}`,
+    powerCharge: (pct) => `${pct}% laden`,
+    powerDischarge: (pct) => `${pct}% ontladen`,
+    today: "vandaag",
+    tomorrow: "morgen",
+    computing: "wordt berekend \u2026",
+    loadingData: "Gegevens laden\u2026",
+    computingForecast: "Voorspelling wordt berekend\u2026",
+    noData: "Geen SoC-gegevens: controleer soc_entity en de recorder.",
+    noForecast: "Voorspelling niet beschikbaar (service goodwe_tou.forecast_soc).",
+    haUnavailable: "Home Assistant is niet beschikbaar",
+    actionFailed: "Actie mislukt",
+  },
+  en: {
+    title: "GoodWe Time-of-Use",
+    socTitle: "Battery SoC",
+    measured: "measured",
+    forecast: "forecast",
+    dayLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    windowN: (n) => `Window ${n}`,
+    powerCharge: (pct) => `${pct}% charging`,
+    powerDischarge: (pct) => `${pct}% discharging`,
+    today: "today",
+    tomorrow: "tomorrow",
+    computing: "computing \u2026",
+    loadingData: "Loading data\u2026",
+    computingForecast: "Computing forecast\u2026",
+    noData: "No SoC data: check soc_entity and the recorder.",
+    noForecast: "Forecast not available (service goodwe_tou.forecast_soc).",
+    haUnavailable: "Home Assistant is not available",
+    actionFailed: "Action failed",
+  },
+};
+
+// Map any language tag (nl, nl-NL, en-GB, ...) onto a language we ship.
+const resolveLangCode = (value) => {
+  const code = String(value || "").toLowerCase();
+  if (code.startsWith("en")) return "en";
+  return "nl";
+};
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 const pad = (value) => String(value).padStart(2, "0");
@@ -137,12 +179,15 @@ class GoodweTouCard extends HTMLElement {
     this._forecastLoading = false;
     this._lastFetch = 0;
     this._fetching = false;
+    this._lang = "nl";
+    this._langOverride = null;
   }
 
   setConfig(config) {
     this._config = config || {};
     this._prefix = this._config.prefix || PREFIX_DEFAULT;
-    this._title = this._config.title || "GoodWe Time-of-Use";
+    this._langOverride = this._config.language || null;
+    this._title = this._config.title || null;
     this._socEntity = this._config.soc_entity || SOC_DEFAULT;
     this._hoursBack =
       Number(this._config.hours_back) > 0
@@ -154,6 +199,11 @@ class GoodweTouCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    const lang = this._resolveLang(hass);
+    if (lang !== this._lang) {
+      this._lang = lang;
+      this._built = false;
+    }
     if (!this._built) this._build();
     if (!this._built) return;
     this._renderWeek();
@@ -177,6 +227,26 @@ class GoodweTouCard extends HTMLElement {
     return this._hass ? this._hass.states[entityId] : undefined;
   }
 
+  // -- language ----------------------------------------------------------
+
+  // Card `language:` override, else the language the integration speaks (on the
+  // activity sensor), else Home Assistant's own language, else Dutch.
+  _resolveLang(hass) {
+    if (this._langOverride) return resolveLangCode(this._langOverride);
+    const activity = this._state(this._entity("sensor", "activity_log"));
+    const attr = activity && activity.attributes && activity.attributes.language;
+    if (attr) return resolveLangCode(attr);
+    const locale = hass && hass.locale && hass.locale.language;
+    if (locale) return resolveLangCode(locale);
+    return "nl";
+  }
+
+  _t(key, ...args) {
+    const table = LANGS[this._lang] || LANGS.nl;
+    const value = table[key];
+    return typeof value === "function" ? value(...args) : value;
+  }
+
   // -- construction ------------------------------------------------------
 
   _build() {
@@ -190,10 +260,10 @@ class GoodweTouCard extends HTMLElement {
         </div>
         <div class="week" id="week"></div>
         <div class="charthead">
-          <span class="charttitle">Batterij-SoC</span>
+          <span class="charttitle">${this._t("socTitle")}</span>
           <span class="legend">
-            <span class="measured"><span class="swatch"></span>gemeten</span>
-            <span class="forecast"><span class="swatch"></span>voorspeld</span>
+            <span class="measured"><span class="swatch"></span>${this._t("measured")}</span>
+            <span class="forecast"><span class="swatch"></span>${this._t("forecast")}</span>
           </span>
         </div>
         <svg class="chart" id="chart" preserveAspectRatio="none"></svg>
@@ -201,7 +271,9 @@ class GoodweTouCard extends HTMLElement {
         <div class="error" id="error"></div>
       </ha-card>
     `;
-    root.querySelector(".title").textContent = `${this._title} (Version ${CARD_VERSION})`;
+    root.querySelector(".title").textContent = `${
+      this._title || this._t("title")
+    } (Version ${CARD_VERSION})`;
     this._weekEl = root.querySelector("#week");
     this._chartEl = root.querySelector("#chart");
     this._noteEl = root.querySelector("#note");
@@ -302,7 +374,7 @@ class GoodweTouCard extends HTMLElement {
 
   async _callServiceWithResponse(domain, service, data) {
     const hass = this._hass;
-    if (!hass) throw new Error("Home Assistant is niet beschikbaar");
+    if (!hass) throw new Error(this._t("haUnavailable"));
     if (typeof hass.callWS === "function") {
       const result = await hass.callWS({
         type: "call_service",
@@ -324,6 +396,7 @@ class GoodweTouCard extends HTMLElement {
     if (!host) return;
     host.innerHTML = "";
     const windows = this._readWindows();
+    const labels = this._t("dayLabels");
     const todayKey = weekdayKey(new Date());
     for (let d = 0; d < DAY_KEYS.length; d++) {
       const key = DAY_KEYS[d];
@@ -332,7 +405,7 @@ class GoodweTouCard extends HTMLElement {
 
       const head = document.createElement("div");
       head.className = "wdayname";
-      head.textContent = DAY_LABELS[d];
+      head.textContent = labels[d];
       day.appendChild(head);
 
       const items = windows
@@ -347,7 +420,7 @@ class GoodweTouCard extends HTMLElement {
       for (const window of items) {
         const item = document.createElement("div");
         item.className = `witem ${window.mode}`;
-        item.title = `Venster ${window.n}`;
+        item.title = this._t("windowN", window.n);
         const time = document.createElement("span");
         time.className = "wtime";
         time.textContent = `${fmtHM(window.startHM)}\u2013${fmtHM(window.stopHM)}`;
@@ -355,8 +428,8 @@ class GoodweTouCard extends HTMLElement {
         power.className = "wpow";
         power.textContent =
           window.mode === "charge"
-            ? `${window.pct}% laden`
-            : `${window.pct}% ontladen`;
+            ? this._t("powerCharge", window.pct)
+            : this._t("powerDischarge", window.pct);
         item.appendChild(time);
         item.appendChild(power);
         day.appendChild(item);
@@ -429,8 +502,8 @@ class GoodweTouCard extends HTMLElement {
 
     // Day boundaries.
     for (const [moment, name] of [
-      [startOfDay(now), "vandaag"],
-      [startOfDay(addDays(now, 1)), "morgen"],
+      [startOfDay(now), this._t("today")],
+      [startOfDay(addDays(now, 1)), this._t("tomorrow")],
     ]) {
       const px = x(moment);
       if (px < padL || px > padL + plotW) continue;
@@ -507,21 +580,19 @@ class GoodweTouCard extends HTMLElement {
         "font-weight": "600",
         fill: "#ff9800",
       });
-      loading.textContent = "wordt berekend \u2026";
+      loading.textContent = this._t("computing");
       host.appendChild(loading);
     }
 
     if (this._noteEl) {
       if (!this._lastFetch) {
-        this._noteEl.textContent = "Gegevens laden\u2026";
+        this._noteEl.textContent = this._t("loadingData");
       } else if (this._forecastLoading) {
-        this._noteEl.textContent = "Voorspelling wordt berekend\u2026";
+        this._noteEl.textContent = this._t("computingForecast");
       } else if (!this._history.length && !this._forecast.length) {
-        this._noteEl.textContent =
-          "Geen SoC-gegevens: controleer soc_entity en de recorder.";
+        this._noteEl.textContent = this._t("noData");
       } else if (!this._forecast.length) {
-        this._noteEl.textContent =
-          "Voorspelling niet beschikbaar (service goodwe_tou.forecast_soc).";
+        this._noteEl.textContent = this._t("noForecast");
       } else {
         this._noteEl.textContent = "";
       }
@@ -553,7 +624,7 @@ class GoodweTouCard extends HTMLElement {
 
   _showError(err) {
     if (!this._errorEl) return;
-    this._errorEl.textContent = (err && err.message) || "Actie mislukt";
+    this._errorEl.textContent = (err && err.message) || this._t("actionFailed");
     clearTimeout(this._errorTimer);
     this._errorTimer = setTimeout(() => {
       this._errorEl.textContent = "";

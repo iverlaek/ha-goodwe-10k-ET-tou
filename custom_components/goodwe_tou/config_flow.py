@@ -24,7 +24,9 @@ from .const import (
     CONF_EXPORT_HOURS,
     CONF_EXPORT_LIMIT,
     CONF_HOST,
+    CONF_LANGUAGE,
     CONF_LOG_SIZE,
+    CONF_MANUAL_WINDOW,
     CONF_MIN_CELL_VOLTAGE,
     CONF_MIN_SOC,
     CONF_PORT,
@@ -51,7 +53,9 @@ from .const import (
     DEFAULT_EXPORT_HOURS,
     DEFAULT_EXPORT_LIMIT,
     DEFAULT_HOST,
+    DEFAULT_LANGUAGE,
     DEFAULT_LOG_SIZE,
+    DEFAULT_MANUAL_WINDOW,
     DEFAULT_MIN_CELL_VOLTAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_PORT,
@@ -71,27 +75,46 @@ from .const import (
     DEFAULT_TIMEOUT,
     DEFAULT_WINDOW_POWER,
     DOMAIN,
-    PRICE_SOURCES,
+    LANGUAGE_EN,
+    LANGUAGE_NL,
     PRICE_SOURCE_ENTITY,
     PRICE_SOURCE_TIBBER,
     RECHECK_CHOICES,
     WORK_MODE_REGISTER,
 )
 from .goodwe_udp import GoodweError, GoodweUdpClient
+from .i18n import resolve_language
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_HOST, default=DEFAULT_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): vol.All(
-            int, vol.Range(min=1, max=65535)
-        ),
-        vol.Required(CONF_COMM_ADDR, default=DEFAULT_COMM_ADDR): vol.All(
-            int, vol.Range(min=1, max=255)
-        ),
-    }
-)
+
+def _language_selector() -> selector.SelectSelector:
+    """A dropdown with the languages the integration speaks (endonyms)."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                selector.SelectOptionDict(value=LANGUAGE_NL, label="Nederlands"),
+                selector.SelectOptionDict(value=LANGUAGE_EN, label="English"),
+            ],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _user_schema(language: str) -> vol.Schema:
+    """The install form: how to reach the inverter, and which language to speak."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_HOST, default=DEFAULT_HOST): str,
+            vol.Required(CONF_PORT, default=DEFAULT_PORT): vol.All(
+                int, vol.Range(min=1, max=65535)
+            ),
+            vol.Required(CONF_COMM_ADDR, default=DEFAULT_COMM_ADDR): vol.All(
+                int, vol.Range(min=1, max=255)
+            ),
+            vol.Required(CONF_LANGUAGE, default=language): _language_selector(),
+        }
+    )
 
 
 class GoodweTouConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -101,6 +124,8 @@ class GoodweTouConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
+        # Pre-select the Home Assistant language when we speak it.
+        default_language = resolve_language(self.hass.config.language)
         if user_input is not None:
             host = user_input[CONF_HOST]
             await self.async_set_unique_id(host.lower())
@@ -122,12 +147,17 @@ class GoodweTouConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error while probing the inverter")
                 errors["base"] = "unknown"
             else:
+                user_input[CONF_LANGUAGE] = resolve_language(
+                    user_input.get(CONF_LANGUAGE, default_language)
+                )
                 return self.async_create_entry(
                     title=f"GoodWe Time-of-Use ({host})", data=user_input
                 )
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=_user_schema(default_language),
+            errors=errors,
         )
 
     @staticmethod
@@ -144,12 +174,19 @@ class GoodweTouOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         options = self.config_entry.options
+        data = self.config_entry.data
 
         def default(key: str, fallback: object) -> object:
-            return options.get(key, fallback)
+            return options.get(key, data.get(key, fallback))
 
         schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_LANGUAGE,
+                    default=resolve_language(
+                        default(CONF_LANGUAGE, DEFAULT_LANGUAGE)
+                    ),
+                ): _language_selector(),
                 vol.Optional(
                     CONF_SCAN_INTERVAL,
                     default=default(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
@@ -240,6 +277,10 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_WINDOW_POWER,
                     default=default(CONF_WINDOW_POWER, DEFAULT_WINDOW_POWER),
                 ): vol.All(int, vol.Range(min=1, max=100)),
+                vol.Optional(
+                    CONF_MANUAL_WINDOW,
+                    default=default(CONF_MANUAL_WINDOW, DEFAULT_MANUAL_WINDOW),
+                ): vol.All(int, vol.Range(min=1, max=4)),
                 vol.Optional(
                     CONF_RECHECK_MINUTES,
                     default=default(CONF_RECHECK_MINUTES, DEFAULT_RECHECK_MINUTES),

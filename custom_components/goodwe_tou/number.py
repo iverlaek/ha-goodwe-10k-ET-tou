@@ -39,8 +39,10 @@ class TouPowerEntity(GoodweTouEntity, NumberEntity):
         super().__init__(
             coordinator,
             f"w{window}_power",
-            f"Window {window} power",
+            coordinator._t("entity.window_power", n=window),
             "mdi:battery-charging",
+            domain="number",
+            object_id=f"window_{window}_power",
         )
         self._window = window
 

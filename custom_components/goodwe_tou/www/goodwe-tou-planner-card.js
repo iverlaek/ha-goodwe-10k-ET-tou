@@ -40,21 +40,110 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "0.7.5";
+const CARD_VERSION = "1.0.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-const DAY_LABELS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
-const DAY_FULL = [
-  "Maandag",
-  "Dinsdag",
-  "Woensdag",
-  "Donderdag",
-  "Vrijdag",
-  "Zaterdag",
-  "Zondag",
-];
 const DAY_MINUTES = 1440;
+
+// Everything the card says, per language. The Dutch table mirrors the original
+// card text exactly; the English table is the translation. A value may be a
+// function when it takes an argument (a day label, a window number).
+const LANGS = {
+  nl: {
+    title: "Laadplanning",
+    autoEco: "Auto/ECO Mode",
+    manualOverride: "Manual override",
+    read: "Lezen van omvormer",
+    calc: "Optimale prijzen berekenen",
+    apply: "Toepassen",
+    dayLabels: ["ma", "di", "wo", "do", "vr", "za", "zo"],
+    dayFull: [
+      "Maandag",
+      "Dinsdag",
+      "Woensdag",
+      "Donderdag",
+      "Vrijdag",
+      "Zaterdag",
+      "Zondag",
+    ],
+    noDays: "geen",
+    everyDay: "elke dag",
+    weekdays: "ma\u2013vr",
+    weekend: "za\u2013zo",
+    todaySuffix: " (vandaag)",
+    hint: "sleep een balk om de tijd te wijzigen; vensters mogen elkaar niet overlappen.",
+    charge: "laden",
+    discharge: "ontladen",
+    generalMode: "algemene modus",
+    windowN: (n) => `venster ${n}`,
+    notOn: (d) => `niet op ${d}`,
+    inactive: "inactief",
+    expired: "afgelopen",
+    active: "actief",
+    activate: "activeren",
+    notActiveOn: (d) => `niet actief op ${d}`,
+    greyGeneral: "Grijs = algemene modus (buiten de vensters)",
+    nowPrefix: "Nu: ",
+    whyTimes: "Waarom deze tijden",
+    windowPill: (n) => `Venster ${n}`,
+    planPill: "Plan",
+    ecoTitle: "ECO-modus aan en automatische herberekening actief",
+    manualTitle: "Automatische herberekening pauzeren; vensters blijven staan",
+    haUnavailable: "Home Assistant is niet beschikbaar",
+    actionFailed: "Actie mislukt",
+  },
+  en: {
+    title: "Charge planning",
+    autoEco: "Auto/ECO Mode",
+    manualOverride: "Manual override",
+    read: "Read from inverter",
+    calc: "Set cheapest hours",
+    apply: "Apply",
+    dayLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    dayFull: [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday",
+    ],
+    noDays: "none",
+    everyDay: "every day",
+    weekdays: "Mon\u2013Fri",
+    weekend: "Sat\u2013Sun",
+    todaySuffix: " (today)",
+    hint: "drag a bar to change the time; windows may not overlap.",
+    charge: "charge",
+    discharge: "discharge",
+    generalMode: "general mode",
+    windowN: (n) => `window ${n}`,
+    notOn: (d) => `not on ${d}`,
+    inactive: "inactive",
+    expired: "expired",
+    active: "active",
+    activate: "activate",
+    notActiveOn: (d) => `not active on ${d}`,
+    greyGeneral: "Grey = general mode (outside the windows)",
+    nowPrefix: "Now: ",
+    whyTimes: "Why these times",
+    windowPill: (n) => `Window ${n}`,
+    planPill: "Plan",
+    ecoTitle: "ECO mode on and automatic re-check active",
+    manualTitle: "Pause automatic re-check; windows stay as they are",
+    haUnavailable: "Home Assistant is not available",
+    actionFailed: "Action failed",
+  },
+};
+
+// Map any language tag (nl, nl-NL, en-GB, ...) onto a language we ship.
+const resolveLangCode = (value) => {
+  const code = String(value || "").toLowerCase();
+  if (code.startsWith("en")) return "en";
+  return "nl";
+};
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 const pad = (value) => String(value).padStart(2, "0");
@@ -101,20 +190,6 @@ const expandDays = (text) => {
   if (value.includes("weekend")) return new Set(DAY_KEYS.slice(5));
   if (!value || value === "none" || value === "off" || value === "-") return new Set();
   return new Set(DAY_KEYS.filter((key) => value.includes(key)));
-};
-
-const daysToText = (set) => {
-  if (!set || !set.size) return "geen";
-  if (set.size === 7) return "elke dag";
-  if (set.size === 5 && DAY_KEYS.slice(0, 5).every((key) => set.has(key))) {
-    return "ma\u2013vr";
-  }
-  if (set.size === 2 && DAY_KEYS.slice(5).every((key) => set.has(key))) {
-    return "za\u2013zo";
-  }
-  return DAY_KEYS.filter((key) => set.has(key))
-    .map((key) => DAY_LABELS[DAY_KEYS.indexOf(key)])
-    .join(", ");
 };
 
 const STYLES = `
@@ -239,6 +314,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._reasons = [];
     this._notes = [];
     this._summary = "";
+    this._lang = "nl";
+    this._langOverride = null;
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerUp = this._onPointerUp.bind(this);
   }
@@ -246,7 +323,8 @@ class GoodweTouPlannerCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     this._prefix = this._config.prefix || PREFIX_DEFAULT;
-    this._title = this._config.title || "Laadplanning";
+    this._langOverride = this._config.language || null;
+    this._title = this._config.title || null;
     this._priceEntity = this._config.price_entity || null;
     this._slot =
       Number(this._config.slot_minutes) > 0 ? Number(this._config.slot_minutes) : 15;
@@ -256,6 +334,11 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    const lang = this._resolveLang(hass);
+    if (lang !== this._lang) {
+      this._lang = lang;
+      this._built = false;
+    }
     if (!this._built) this._build();
     if (!this._built) return;
 
@@ -280,6 +363,48 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   getCardSize() {
     return 12;
+  }
+
+  // -- language ----------------------------------------------------------
+
+  // Card `language:` override, else the language the integration speaks (on the
+  // activity sensor), else Home Assistant's own language, else Dutch.
+  _resolveLang(hass) {
+    if (this._langOverride) return resolveLangCode(this._langOverride);
+    const activity = this._state(this._entity("sensor", "activity_log"));
+    const attr = activity && activity.attributes && activity.attributes.language;
+    if (attr) return resolveLangCode(attr);
+    const locale = hass && hass.locale && hass.locale.language;
+    if (locale) return resolveLangCode(locale);
+    return "nl";
+  }
+
+  _t(key, ...args) {
+    const table = LANGS[this._lang] || LANGS.nl;
+    const value = table[key];
+    return typeof value === "function" ? value(...args) : value;
+  }
+
+  _dayLabel(index) {
+    return this._t("dayLabels")[index];
+  }
+
+  _dayFull(index) {
+    return this._t("dayFull")[index];
+  }
+
+  _daysToText(set) {
+    if (!set || !set.size) return this._t("noDays");
+    if (set.size === 7) return this._t("everyDay");
+    if (set.size === 5 && DAY_KEYS.slice(0, 5).every((key) => set.has(key))) {
+      return this._t("weekdays");
+    }
+    if (set.size === 2 && DAY_KEYS.slice(5).every((key) => set.has(key))) {
+      return this._t("weekend");
+    }
+    return DAY_KEYS.filter((key) => set.has(key))
+      .map((key) => this._dayLabel(DAY_KEYS.indexOf(key)))
+      .join(", ");
   }
 
   _entity(domain, suffix) {
@@ -319,8 +444,8 @@ class GoodweTouPlannerCard extends HTMLElement {
         <div class="head">
           <div class="title"></div>
           <div class="modes">
-            <button id="auto_eco" class="modebtn" type="button">Auto/ECO Mode</button>
-            <button id="manual" class="modebtn" type="button">Manual override</button>
+            <button id="auto_eco" class="modebtn" type="button">${this._t("autoEco")}</button>
+            <button id="manual" class="modebtn" type="button">${this._t("manualOverride")}</button>
           </div>
         </div>
         <div class="week" id="week"></div>
@@ -334,15 +459,17 @@ class GoodweTouPlannerCard extends HTMLElement {
         <div class="bandcap" id="bandcap"></div>
         <div class="rows" id="rows"></div>
         <div class="actions">
-          <button id="read" type="button">Lezen van omvormer</button>
-          <button id="calc" type="button">Optimale prijzen berekenen</button>
-          <button id="apply" class="primary" type="button">Toepassen</button>
+          <button id="read" type="button">${this._t("read")}</button>
+          <button id="calc" type="button">${this._t("calc")}</button>
+          <button id="apply" class="primary" type="button">${this._t("apply")}</button>
         </div>
         <div class="reasons" id="reasons"></div>
         <div class="error" id="error"></div>
       </ha-card>
     `;
-    root.querySelector(".title").textContent = `${this._title} (Version ${CARD_VERSION})`;
+    root.querySelector(".title").textContent = `${
+      this._title || this._t("title")
+    } (Version ${CARD_VERSION})`;
     this._weekEl = root.querySelector("#week");
     this._hintEl = root.querySelector("#hint");
     this._rulerEl = root.querySelector("#ruler");
@@ -362,12 +489,12 @@ class GoodweTouPlannerCard extends HTMLElement {
       btn.type = "button";
       btn.className = "daybtn";
       const label = document.createElement("span");
-      label.textContent = DAY_LABELS[d];
+      label.textContent = this._dayLabel(d);
       const count = document.createElement("span");
       count.className = "dcount";
       btn.appendChild(label);
       btn.appendChild(count);
-      btn.title = DAY_FULL[d];
+      btn.title = this._dayFull(d);
       btn.addEventListener("click", () => {
         this._day = d;
         this._dayChosen = true;
@@ -418,7 +545,7 @@ class GoodweTouPlannerCard extends HTMLElement {
         <button class="daysbtn" type="button"></button>
         <span class="spacer"></span>
         <span class="wtag"></span>
-        <button class="toggle" type="button">actief</button>
+        <button class="toggle" type="button">${this._t("active")}</button>
       </div>
       <div class="wtrack"><div class="empty"></div></div>
       <div class="wdays"></div>
@@ -451,8 +578,8 @@ class GoodweTouPlannerCard extends HTMLElement {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "chip";
-      chip.textContent = DAY_LABELS[dayIndex];
-      chip.title = DAY_FULL[dayIndex];
+      chip.textContent = this._dayLabel(dayIndex);
+      chip.title = this._dayFull(dayIndex);
       chip.addEventListener("click", () => this._toggleDay(index, key));
       refs.days.appendChild(chip);
       refs.chips[key] = chip;
@@ -612,11 +739,11 @@ class GoodweTouPlannerCard extends HTMLElement {
   }
 
   _renderHint() {
-    const label = `${DAY_FULL[this._day]}${this._isToday() ? " (vandaag)" : ""}`;
+    const label = `${this._dayFull(this._day)}${
+      this._isToday() ? this._t("todaySuffix") : ""
+    }`;
     this._hintEl.className = "hint";
-    this._hintEl.textContent =
-      `${label} \u00b7 sleep een balk om de tijd te wijzigen; ` +
-      "vensters mogen elkaar niet overlappen.";
+    this._hintEl.textContent = `${label} \u00b7 ${this._t("hint")}`;
   }
 
   _renderAxis() {
@@ -707,10 +834,12 @@ class GoodweTouPlannerCard extends HTMLElement {
     for (const i of this._activeDayIndices()) {
       const seg = this._segs[i];
       if (minutesOf(seg.startHM) <= nowMin && nowMin < minutesOf(seg.stopHM)) {
-        return `venster ${i + 1} ${seg.mode === "charge" ? "laden" : "ontladen"}`;
+        return `${this._t("windowN", i + 1)} ${
+          seg.mode === "charge" ? this._t("charge") : this._t("discharge")
+        }`;
       }
     }
-    return "algemene modus";
+    return this._t("generalMode");
   }
 
   _renderBand() {
@@ -725,8 +854,9 @@ class GoodweTouPlannerCard extends HTMLElement {
       el.style.left = `${(from / DAY_MINUTES) * 100}%`;
       el.style.width = `${Math.max(0.4, ((to - from) / DAY_MINUTES) * 100)}%`;
       el.title =
-        `${i + 1}: ${seg.mode === "charge" ? "laden" : "ontladen"} ` +
-        `${fmtHM(seg.startHM)}\u2013${fmtHM(seg.stopHM)}`;
+        `${i + 1}: ${
+          seg.mode === "charge" ? this._t("charge") : this._t("discharge")
+        } ` + `${fmtHM(seg.startHM)}\u2013${fmtHM(seg.stopHM)}`;
       host.appendChild(el);
     }
     if (this._isToday()) {
@@ -736,8 +866,10 @@ class GoodweTouPlannerCard extends HTMLElement {
       host.appendChild(now);
     }
     this._bandcapEl.innerHTML =
-      "<span>Grijs = algemene modus (buiten de vensters)</span>" +
-      `<span class="nowmode">Nu: ${escapeHtml(this._nowModeText())}</span>`;
+      `<span>${escapeHtml(this._t("greyGeneral"))}</span>` +
+      `<span class="nowmode">${escapeHtml(
+        this._t("nowPrefix") + this._nowModeText()
+      )}</span>`;
   }
 
   _renderRow(i) {
@@ -751,7 +883,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     r.row.classList.toggle("dim", seg.enabled && !applies);
     r.row.classList.toggle("expired", expired);
 
-    r.modeBtn.textContent = seg.mode === "charge" ? "laden" : "ontladen";
+    r.modeBtn.textContent =
+      seg.mode === "charge" ? this._t("charge") : this._t("discharge");
     r.modeBtn.className = `mode ${seg.mode}`;
     r.modeBtn.disabled = !seg.enabled;
 
@@ -762,21 +895,21 @@ class GoodweTouPlannerCard extends HTMLElement {
     r.startInput.disabled = !seg.enabled;
     r.stopInput.disabled = !seg.enabled;
 
-    r.daysBtn.textContent = `${daysToText(seg.days)} \u25be`;
+    r.daysBtn.textContent = `${this._daysToText(seg.days)} \u25be`;
 
     r.tag.className = "wtag";
     if (!seg.enabled) {
-      r.tag.textContent = "inactief";
+      r.tag.textContent = this._t("inactive");
     } else if (expired) {
-      r.tag.textContent = "afgelopen";
+      r.tag.textContent = this._t("expired");
       r.tag.classList.add("expired");
     } else if (!applies) {
-      r.tag.textContent = `niet op ${DAY_LABELS[this._day]}`;
+      r.tag.textContent = this._t("notOn", this._dayLabel(this._day));
     } else {
       r.tag.textContent = "";
     }
 
-    r.toggleBtn.textContent = seg.enabled ? "actief" : "activeren";
+    r.toggleBtn.textContent = seg.enabled ? this._t("active") : this._t("activate");
     r.toggleBtn.classList.toggle("on", seg.enabled);
 
     for (const key of DAY_KEYS) {
@@ -797,8 +930,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     if (!seg.enabled || !applies) {
       if (bar) bar.remove();
       r.empty.textContent = !seg.enabled
-        ? "inactief"
-        : `niet actief op ${DAY_LABELS[this._day]}`;
+        ? this._t("inactive")
+        : this._t("notActiveOn", this._dayLabel(this._day));
       r.empty.style.display = "flex";
       return;
     }
@@ -844,14 +977,17 @@ class GoodweTouPlannerCard extends HTMLElement {
     const items = this._reasons
       .map((reason) => {
         const mode = reason.mode === "discharge" ? "discharge" : "charge";
-        const label = reason.window > 0 ? `Venster ${reason.window}` : "Plan";
+        const label =
+          reason.window > 0
+            ? this._t("windowPill", reason.window)
+            : this._t("planPill");
         return `<li><span class="pill ${mode}">${label}</span><span class="why">${escapeHtml(
           reason.text || ""
         )}</span></li>`;
       })
       .join("");
     el.innerHTML = `
-      <h4>Waarom deze tijden</h4>
+      <h4>${this._t("whyTimes")}</h4>
       ${notes}
       ${items ? `<ul>${items}</ul>` : ""}
     `;
@@ -869,8 +1005,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     // re-check is on; "Manual override" is active when the re-check is paused.
     autoEl.classList.toggle("active", ecoOn && autoOn);
     manualEl.classList.toggle("active", !autoOn);
-    autoEl.title = "ECO-modus aan en automatische herberekening actief";
-    manualEl.title = "Automatische herberekening pauzeren; vensters blijven staan";
+    autoEl.title = this._t("ecoTitle");
+    manualEl.title = this._t("manualTitle");
   }
 
   // -- editing -----------------------------------------------------------
@@ -1096,7 +1232,7 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   async _callServiceWithResponse(domain, service, data) {
     const hass = this._hass;
-    if (!hass) throw new Error("Home Assistant is niet beschikbaar");
+    if (!hass) throw new Error(this._t("haUnavailable"));
     if (typeof hass.callWS === "function") {
       const result = await hass.callWS({
         type: "call_service",
@@ -1113,7 +1249,7 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   _showError(err) {
     if (!this._errorEl) return;
-    this._errorEl.textContent = (err && err.message) || "Actie mislukt";
+    this._errorEl.textContent = (err && err.message) || this._t("actionFailed");
     clearTimeout(this._errorTimer);
     this._errorTimer = setTimeout(() => {
       this._errorEl.textContent = "";

@@ -35,7 +35,12 @@ class TouDaysEntity(GoodweTouEntity, TextEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator, window: int) -> None:
         super().__init__(
-            coordinator, f"w{window}_days", f"Window {window} days", "mdi:calendar-week"
+            coordinator,
+            f"w{window}_days",
+            coordinator._t("entity.window_days", n=window),
+            "mdi:calendar-week",
+            domain="text",
+            object_id=f"window_{window}_days",
         )
         self._window = window
 

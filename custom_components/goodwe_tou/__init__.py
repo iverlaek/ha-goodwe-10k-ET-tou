@@ -26,7 +26,6 @@ from .const import (
     CONF_EXPORT_HOURS,
     CONF_EXPORT_LIMIT,
     CONF_HOST,
-    CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
     CONF_MIN_SOC,
     CONF_PORT,
@@ -44,6 +43,7 @@ from .const import (
     CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
     DEFAULT_COMM_ADDR,
+    DEFAULT_LANGUAGE,
     DEFAULT_PORT,
     DEFAULT_PRICE_SOURCE,
     DEFAULT_RECHECK_MINUTES,
@@ -57,6 +57,7 @@ from .const import (
 )
 from .coordinator import GoodweTouCoordinator, TibberPriceCoordinator, window_to_dict
 from .goodwe_udp import GoodweUdpClient
+from .i18n import translate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -232,11 +233,18 @@ def _recheck_minutes(entry: ConfigEntry) -> list[int]:
 
     The interval is configurable but has to divide an hour so the schedule stays
     aligned with the quarter-hourly prices.
+
+    The re-check fires one minute *before* every quarter-hour boundary. The
+    GoodWe only switches a Time-of-Use window on about a minute after its
+    configured start, and a plan computed exactly on the boundary drops the slot
+    that has just begun; that made the discharge window slide a quarter hour
+    later on every re-check until it disappeared. Planning at, say, ``07:59``
+    keeps the ``08:00`` slot in the future, so the window starts where it should.
     """
     interval = int(entry.options.get(CONF_RECHECK_MINUTES, DEFAULT_RECHECK_MINUTES))
     if interval <= 0 or 60 % interval:
         interval = DEFAULT_RECHECK_MINUTES
-    return list(range(0, 60, interval))
+    return sorted((minute - 1) % 60 for minute in range(0, 60, interval))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -347,7 +355,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         ) -> dict[str, object]:
             coordinators = _coordinators(hass)
             if not coordinators:
-                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
             plan = await coordinators[0].async_calculate_cheapest_hours(call.data)
             return {
                 "windows": [window_to_dict(window) for window in plan.windows],
@@ -388,7 +396,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         ) -> dict[str, list[dict]]:
             coordinators = _coordinators(hass)
             if not coordinators:
-                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
             points = await coordinators[0].async_forecast_soc(call.data)
             return {
                 "points": [
@@ -412,7 +420,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         ) -> dict[str, list[dict]]:
             coordinators = _coordinators(hass)
             if not coordinators:
-                raise HomeAssistantError("No GoodWe Time-of-Use entry is loaded")
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
             entries = coordinators[0].activity(
                 window=call.data.get("window"),
                 result=call.data.get("result"),

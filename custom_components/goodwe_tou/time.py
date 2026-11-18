@@ -37,7 +37,12 @@ class TouTimeEntity(GoodweTouEntity, TimeEntity):
     ) -> None:
         label, icon = _KINDS[kind]
         super().__init__(
-            coordinator, f"w{window}_{label}", f"Window {window} {label}", icon
+            coordinator,
+            f"w{window}_{label}",
+            coordinator._t(f"entity.window_{label}", n=window),
+            icon,
+            domain="time",
+            object_id=f"window_{window}_{label}",
         )
         self._window = window
         self._kind = kind

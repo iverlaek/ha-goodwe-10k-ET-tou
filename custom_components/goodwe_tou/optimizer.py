@@ -35,6 +35,7 @@ from .const import (
     DEFAULT_CHARGE_KW,
     DEFAULT_DISCHARGE_KW,
     DEFAULT_EXPORT_HOURS,
+    DEFAULT_LANGUAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_POWER_KW,
     DEFAULT_RTE,
@@ -43,34 +44,19 @@ from .const import (
     SLOT_MINUTES,
     WINDOWS,
 )
+from .i18n import day_label as _i18n_day_label
+from .i18n import translate, weekday_name
 from .registers import TouWindow, day_bit, mask_to_days
 
-_NL_WEEKDAYS = (
-    "maandag",
-    "dinsdag",
-    "woensdag",
-    "donderdag",
-    "vrijdag",
-    "zaterdag",
-    "zondag",
-)
 
+def _day_label(day: dt.date, today: dt.date, lang: str = DEFAULT_LANGUAGE) -> str:
+    """A short label for ``day`` relative to ``today`` (``vandaag``/``morgen``).
 
-def _day_label(day: dt.date, today: dt.date) -> str:
-    """A short Dutch label for ``day`` relative to ``today``.
-
-    The price horizon only spans today and tomorrow, so "vandaag"/"morgen" read
+    The price horizon only spans today and tomorrow, so "today"/"tomorrow" read
     more naturally than a weekday name. Anything further out (or in the past)
     falls back to the weekday.
     """
-    delta = (day - today).days
-    if delta == 0:
-        return "vandaag"
-    if delta == 1:
-        return "morgen"
-    if delta == -1:
-        return "gisteren"
-    return _NL_WEEKDAYS[day.weekday()]
+    return _i18n_day_label(lang, day, today)
 
 
 @dataclass(frozen=True)
@@ -105,11 +91,14 @@ class Plan:
     windows: list[TouWindow] = field(default_factory=list)
     reasons: list[PlanReason] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    lang: str = DEFAULT_LANGUAGE
 
     @property
     def summary(self) -> str:
         """A one-line summary suitable for the activity log."""
-        return " ".join(self.notes) if self.notes else "Geen vensters nodig."
+        return " ".join(self.notes) if self.notes else translate(
+            self.lang, "plan.summary_empty"
+        )
 
     def reason_texts(self) -> list[dict[str, object]]:
         return [reason.as_dict() for reason in self.reasons]
@@ -232,6 +221,7 @@ def _plan_overview(
     slots: Sequence[PriceSlot],
     slot_minutes: int,
     today: dt.date,
+    lang: str = DEFAULT_LANGUAGE,
 ) -> str:
     """A per-day summary of the plan, e.g. ``vandaag: ontladen 17:30-18:30``.
 
@@ -248,15 +238,26 @@ def _plan_overview(
         day = start_dt.date()
         if stop_dt.date() != day:
             stop_dt = dt.datetime.combine(day, dt.time(23, 59))
-        verb = "laden" if mode == "charge" else "ontladen"
+        verb = translate(lang, f"mode.{mode}")
         by_day.setdefault(day, []).append(
-            f"{verb} {start_dt:%H:%M}\u2013{stop_dt:%H:%M}"
+            translate(
+                lang,
+                "plan.overview_item",
+                verb=verb,
+                start=f"{start_dt:%H:%M}",
+                stop=f"{stop_dt:%H:%M}",
+            )
         )
     parts = [
-        f"{_day_label(day, today)}: " + ", ".join(items)
+        translate(
+            lang,
+            "plan.overview_day",
+            day=_day_label(day, today, lang),
+            items=", ".join(items),
+        )
         for day, items in sorted(by_day.items())
     ]
-    return "Vensterplan \u2014 " + "; ".join(parts) + "."
+    return translate(lang, "plan.overview", parts="; ".join(parts))
 
 
 def _select_indices(
@@ -383,6 +384,7 @@ def build_plan(
     discharge_windows: int = 2,
     slot_minutes: int = SLOT_MINUTES,
     power_percent: int = 100,
+    lang: str = DEFAULT_LANGUAGE,
 ) -> Plan:
     """Plan Time-of-Use windows from prices and the battery state, with reasons.
 
@@ -404,11 +406,11 @@ def build_plan(
     one :class:`PlanReason` per window plus general ``notes``.
     """
     if not prices:
-        return Plan(notes=["Geen prijzen beschikbaar."])
+        return Plan(notes=[translate(lang, "plan.no_prices")], lang=lang)
 
     future = [slot for slot in prices if slot.time >= now]
     if not future:
-        return Plan(notes=["Geen toekomstige prijzen beschikbaar."])
+        return Plan(notes=[translate(lang, "plan.no_future_prices")], lang=lang)
 
     slot_hours = slot_minutes / 60.0
     charge_power_kw = max(0.0, float(charge_power_kw))
@@ -531,49 +533,54 @@ def build_plan(
     notes: list[str] = []
     if skipped_charge:
         notes.append(
-            f"Overnacht laden overgeslagen: de goedkoopste uren (gemiddeld "
-            f"\u20ac{charge_avg:.3f}/kWh) zijn, met de laad-/ontlaadverliezen "
-            f"(RTE {rte * 100:.0f}%), niet goedkoper dan het duurste uur "
-            f"(gemiddeld \u20ac{reference_avg:.3f}/kWh)."
+            translate(
+                lang,
+                "plan.skipped_charge",
+                charge=charge_avg,
+                rte=rte * 100,
+                reference=reference_avg,
+            )
         )
     elif soc >= target_soc:
-        notes.append(f"Batterij staat al op het doel ({soc:.0f}%).")
+        notes.append(translate(lang, "plan.already_target", soc=soc))
     elif charge_idx:
         charged_kwh = len(charge_idx) * charge_power_kw * slot_hours
         notes.append(
-            f"Batterij {soc:.0f}% \u2192 doel {target_soc:.0f}%. Met het verbruik "
-            f"van {standby_kw:.1f} kW tot en tijdens de laaduren en de "
-            f"laadverliezen (RTE {rte * 100:.0f}%) is ongeveer "
-            f"{charged_kwh:.1f} kWh nodig."
+            translate(
+                lang,
+                "plan.charge_note",
+                soc=soc,
+                target=target_soc,
+                standby=standby_kw,
+                rte=rte * 100,
+                kwh=charged_kwh,
+            )
         )
     else:
         notes.append(
-            f"Batterij {soc:.0f}%; er zijn nu geen goedkope uren om naar het doel "
-            f"{target_soc:.0f}% te laden."
+            translate(lang, "plan.no_cheap_hours", soc=soc, target=target_soc)
         )
     if pv_credit_kwh > 0:
-        notes.append(
-            f"PV-prognose levert nog {pv_credit_kwh:.1f} kWh voor niets. Dat verlaagt "
-            "je inkoop overdag, dus laden we de batterij 's nachts goedkoop vol in "
-            "plaats van later duur in te kopen."
-        )
+        notes.append(translate(lang, "plan.pv_note", pv=pv_credit_kwh))
     if export_cap_kwh is not None and available_kwh > export_cap_kwh:
         notes.append(
-            f"Ontladen is per dag beperkt tot {export_cap_kwh:.1f} kWh (max "
-            f"{float(export_hours):.1f} uur terugleveren op vol vermogen per dag) "
-            f"zodat de batterij niet te vroeg leegloopt; er is {available_kwh:.1f} kWh "
-            f"beschikbaar boven {min_soc:.0f}%."
+            translate(
+                lang,
+                "plan.export_cap_note",
+                cap=export_cap_kwh,
+                hours=float(export_hours),
+                avail=available_kwh,
+                min_soc=min_soc,
+            )
         )
     elif available_kwh > 0:
         notes.append(
-            f"Er is {available_kwh:.1f} kWh beschikbaar om te ontladen boven "
-            f"{min_soc:.0f}%."
+            translate(
+                lang, "plan.available_note", avail=available_kwh, min_soc=min_soc
+            )
         )
     if standby_kw and float(standby_kw) > 0:
-        notes.append(
-            f"Het huis gebruikt ongeveer {float(standby_kw):.1f} kW standby; dat "
-            "neemt de batterij in ECO-modus zelf voor haar rekening."
-        )
+        notes.append(translate(lang, "plan.standby_note", standby=standby_kw))
 
     planned: list[tuple[str, tuple[int, int], float]] = []
     for run in charge_runs:
@@ -594,47 +601,53 @@ def build_plan(
                 PlanReason(
                     window=number,
                     mode=mode,
-                    text=(
-                        f"Goedkoopste {stats['minutes']:.0f} min van de komende periode "
-                        f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
-                        f"{power_kw:.0f} kW laad je hier "
-                        f"{stats['energy_kwh'] * rte:.1f} kWh in de batterij "
-                        f"(RTE {rte * 100:.0f}%)."
+                    text=translate(
+                        lang,
+                        "plan.charge_reason",
+                        minutes=stats["minutes"],
+                        avg=stats["avg_price"],
+                        power=power_kw,
+                        kwh=stats["energy_kwh"] * rte,
+                        rte=rte * 100,
                     ),
                 )
             )
         else:
             revenue = stats["energy_kwh"] * stats["avg_price"]
             when = (
-                _NL_WEEKDAYS[future[run[0]].time.weekday()]
+                weekday_name(lang, future[run[0]].time.weekday())
                 if per_day_discharge
-                else "de komende periode"
+                else translate(lang, "plan.coming_period")
             )
             reasons.append(
                 PlanReason(
                     window=number,
                     mode=mode,
-                    text=(
-                        f"Duurste {stats['minutes']:.0f} min van {when} "
-                        f"(gemiddeld \u20ac{stats['avg_price']:.3f}/kWh). Met "
-                        f"{power_kw:.0f} kW ontlaad je hier {stats['energy_kwh']:.1f} kWh; "
-                        f"dat levert ongeveer \u20ac{revenue:.2f} op."
+                    text=translate(
+                        lang,
+                        "plan.discharge_reason",
+                        minutes=stats["minutes"],
+                        when=when,
+                        avg=stats["avg_price"],
+                        power=power_kw,
+                        kwh=stats["energy_kwh"],
+                        revenue=revenue,
                     ),
                 )
             )
 
     if not windows:
-        notes.append("Geen vensters nodig: de batterij is op doel en er valt niets te ontladen.")
+        notes.append(translate(lang, "plan.no_windows"))
 
     # Lead with a per-day overview so the plan as a whole names which day each
     # window runs on ("vandaag ... en morgen ..."), not just each window's own reason.
-    overview = _plan_overview(planned, future, slot_minutes, now.date())
+    overview = _plan_overview(planned, future, slot_minutes, now.date(), lang)
     if overview:
         notes.insert(0, overview)
 
     windows = windows[:budget]
     reasons = [reason for reason in reasons if reason.window <= budget]
-    return Plan(windows=windows, reasons=reasons, notes=notes)
+    return Plan(windows=windows, reasons=reasons, notes=notes, lang=lang)
 
 
 def plan_windows(

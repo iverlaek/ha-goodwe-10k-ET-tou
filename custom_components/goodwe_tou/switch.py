@@ -32,7 +32,14 @@ class TouEcoSwitch(GoodweTouEntity, SwitchEntity):
     """
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(coordinator, "eco_mode", "ECO mode", "mdi:leaf")
+        super().__init__(
+            coordinator,
+            "eco_mode",
+            coordinator._t("entity.eco_mode"),
+            "mdi:leaf",
+            domain="switch",
+            object_id="eco_mode",
+        )
 
     @property
     def is_on(self) -> bool | None:
@@ -59,7 +66,12 @@ class TouAutoReplanSwitch(GoodweTouEntity, RestoreEntity, SwitchEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
         super().__init__(
-            coordinator, "auto_replan", "Auto-herberekening", "mdi:autorenew"
+            coordinator,
+            "auto_replan",
+            coordinator._t("entity.auto_replan"),
+            "mdi:autorenew",
+            domain="switch",
+            object_id="auto_herberekening",
         )
 
     @property

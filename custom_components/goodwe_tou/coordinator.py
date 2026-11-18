@@ -32,7 +32,9 @@ from .const import (
     CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
     CONF_EXPORT_LIMIT,
+    CONF_LANGUAGE,
     CONF_LOG_SIZE,
+    CONF_MANUAL_WINDOW,
     CONF_MIN_CELL_VOLTAGE,
     CONF_MIN_SOC,
     CONF_POWER_KW,
@@ -54,7 +56,9 @@ from .const import (
     DEFAULT_DISCHARGE_WINDOWS,
     DEFAULT_EXPORT_HOURS,
     DEFAULT_EXPORT_LIMIT,
+    DEFAULT_LANGUAGE,
     DEFAULT_LOG_SIZE,
+    DEFAULT_MANUAL_WINDOW,
     DEFAULT_MIN_CELL_VOLTAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_PRICE_ENTITY,
@@ -84,6 +88,7 @@ from .goodwe_udp import (
     GoodweRejectedError,
     GoodweUdpClient,
 )
+from .i18n import resolve_language, translate
 from .optimizer import (
     Plan,
     build_plan,
@@ -93,7 +98,14 @@ from .optimizer import (
     windows_cost,
 )
 from .prices import TIBBER_DOMAIN, TIBBER_SERVICE, tibber_prices
-from .registers import TouWindow, base_for, decode_window, valid_block, window_registers
+from .registers import (
+    TouWindow,
+    base_for,
+    day_bit,
+    decode_window,
+    valid_block,
+    window_registers,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -204,6 +216,24 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         #: Optional Tibber price coordinator backing the price sensor.
         self.price_coordinator: TibberPriceCoordinator | None = None
+
+    # -- language ----------------------------------------------------------
+
+    @property
+    def language(self) -> str:
+        """The language the integration speaks (``nl`` or ``en``).
+
+        Chosen at installation (stored in the entry's data) and changeable in the
+        options; the options win when set.
+        """
+        value = self.config_entry.options.get(
+            CONF_LANGUAGE
+        ) or self.config_entry.data.get(CONF_LANGUAGE)
+        return resolve_language(value or DEFAULT_LANGUAGE)
+
+    def _t(self, key: str, **params: Any) -> str:
+        """Translate ``key`` into the configured language."""
+        return translate(self.language, key, **params)
 
     # -- activity log ------------------------------------------------------
 
@@ -361,12 +391,14 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for register, value in mapping.items():
                 await self._call(self.client.write_register, register, value)
         except GoodweError as err:
-            raise HomeAssistantError(f"Could not write to the inverter: {err}") from err
+            raise HomeAssistantError(
+                self._t("error.write", error=err)
+            ) from err
 
     def _window(self, number: int) -> TouWindow:
         window = self.data["windows"].get(number)
         if window is None:
-            raise HomeAssistantError(f"Window {number} is not available yet")
+            raise HomeAssistantError(self._t("error.window_missing", n=number))
         return window
 
     def _registers_for(self, windows: Mapping[int, TouWindow]) -> dict[int, int]:
@@ -406,7 +438,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 last = await self._call(self._read_all)
             except GoodweError as err:
-                raise HomeAssistantError(f"Could not verify the write: {err}") from err
+                raise HomeAssistantError(
+                    self._t("error.verify", error=err)
+                ) from err
             actual = self._registers_for(last["windows"])
             actual[WORK_MODE_REGISTER] = last["work_mode"]
             actual[EXPORT_ENABLE_REGISTER] = last["export_enabled"]
@@ -422,11 +456,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if last is not None:
             self._publish(last)
-        raise HomeAssistantError(
-            "The inverter did not accept the change (read-back mismatch after "
-            f"{_APPLY_ATTEMPTS} attempts). Another integration may be polling the "
-            "dongle at the same time."
-        )
+        raise HomeAssistantError(self._t("error.readback", attempts=_APPLY_ATTEMPTS))
 
     # -- public operations -------------------------------------------------
 
@@ -436,7 +466,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data = await self._call(self._read_all)
         except GoodweError as err:
             raise HomeAssistantError(
-                f"Could not read from the inverter: {err}"
+                self._t("error.read", error=err)
             ) from err
         self._publish(data)
 
@@ -562,7 +592,14 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             changes=window_changes({number: window}, {number: updated}),
         )
 
-    async def async_set_window_power(self, number: int, signed_power: int) -> None:
+    async def async_set_window_power(
+        self,
+        number: int,
+        signed_power: int,
+        *,
+        action: str = "window_power",
+        reason: str | None = None,
+    ) -> None:
         """Set the signed power (negative charges, positive discharges)."""
         window = self._window(number)
         updated = TouWindow.from_signed_power(
@@ -573,11 +610,12 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         registers = window_registers(updated)
         await self._logged(
-            "window_power",
+            action,
             self._write_verified(
                 {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
             ),
             changes=window_changes({number: window}, {number: updated}),
+            reason=reason,
         )
 
     async def async_set_window_days(self, number: int, days: str) -> None:
@@ -619,10 +657,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_set_eco(True)
         self._record(
             "mode",
-            reason=(
-                "Auto/ECO-modus ingeschakeld: de omvormer staat in ECO en de "
-                "automatische herberekening houdt het plan zelf actueel."
-            ),
+            reason=self._t("log.auto_eco"),
         )
 
     async def async_set_manual_override(self) -> None:
@@ -635,11 +670,43 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.auto_replan_enabled = False
         self._record(
             "mode",
-            reason=(
-                "Handmatige override: automatische herberekening gepauzeerd. De "
-                "vensters op de omvormer blijven staan; kies Auto/ECO-modus om de "
-                "automatisering te hervatten."
-            ),
+            reason=self._t("log.manual_override"),
+        )
+
+    def _manual_window(self) -> int:
+        """The window the manual charge/discharge buttons flip."""
+        value = int(self._option(CONF_MANUAL_WINDOW, DEFAULT_MANUAL_WINDOW))
+        return value if value in WINDOWS else DEFAULT_MANUAL_WINDOW
+
+    def _window_power_percent(self) -> int:
+        """The power percentage the planner and the manual buttons write."""
+        value = int(self._option(CONF_WINDOW_POWER, DEFAULT_WINDOW_POWER))
+        return max(1, min(100, value))
+
+    def manual_mode(self) -> str:
+        """The manual window's direction: ``charge``, ``discharge`` or ``off``."""
+        window = self.data.get("windows", {}).get(self._manual_window())
+        return window.mode if window is not None else "off"
+
+    async def async_set_manual_mode(self, mode: str) -> None:
+        """Point the manual window at charge or discharge (or switch it off).
+
+        The manual buttons only flip the direction of one window; its start, stop
+        and days are left exactly as the user set them. The automatic re-check is
+        paused at the same time, so it cannot undo the manual choice. Pressing the
+        button of the mode that is already running turns the window off again.
+        """
+        number = self._manual_window()
+        if mode == self.manual_mode():
+            mode = "off"
+        power = self._window_power_percent()
+        signed = 0 if mode == "off" else (power if mode == "discharge" else -power)
+        self.auto_replan_enabled = False
+        await self.async_set_window_power(
+            number,
+            signed,
+            action="manual_mode",
+            reason=self._t(f"log.manual_{mode}", n=number, power=power),
         )
 
     # -- cheapest hours ----------------------------------------------------
@@ -693,7 +760,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _price_slots(self, entity_id: str) -> list:
         state = self._state(entity_id)
         if state is None:
-            raise HomeAssistantError(f"Price entity {entity_id} was not found")
+            raise HomeAssistantError(
+                self._t("error.price_entity_missing", entity=entity_id)
+            )
         attributes = state.attributes
         raw = attributes.get("prices")
         if not raw:
@@ -708,8 +777,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         slots = slots_from_prices(raw)
         if not slots:
             raise HomeAssistantError(
-                f"Price entity {entity_id} does not expose a usable price forecast "
-                "(expected a 'prices', 'prices_today' or 'raw_today' attribute)"
+                self._t("error.price_entity_no_forecast", entity=entity_id)
             )
         return slots
 
@@ -722,15 +790,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         coordinator = self.price_coordinator
         records = (coordinator.data or {}).get("prices") if coordinator else None
         if not records:
-            raise HomeAssistantError(
-                "De Tibber-prijzen zijn nog niet opgehaald. Controleer of de "
-                "Tibber-integratie is ingesteld en probeer het zo opnieuw."
-            )
+            raise HomeAssistantError(self._t("error.tibber_not_fetched"))
         slots = slots_from_prices(records)
         if not slots:
-            raise HomeAssistantError(
-                "De Tibber-prijzen bevatten geen bruikbare waarden"
-            )
+            raise HomeAssistantError(self._t("error.tibber_no_values"))
         return slots
 
     def _price_slots_for(self, overrides: Mapping[str, Any]) -> list:
@@ -812,6 +875,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             charge_windows=charge_windows,
             discharge_windows=discharge_windows,
             power_percent=window_power,
+            lang=self.language,
         )
 
     def _remember_plan(self, plan: Plan) -> None:
@@ -928,6 +992,27 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return current  # type: ignore[return-value]
 
+    def _active_window(self, now: dt.datetime | None = None) -> TouWindow | None:
+        """The Time-of-Use window that is running right now, if any.
+
+        A window is active when it is enabled, its day mask covers today and its
+        start has passed while its stop has not — the same test the state-of-charge
+        forecast uses, so the dashboard and the re-check agree on what is running.
+        """
+        current = self._current_windows()
+        if current is None:
+            return None
+        if now is None:
+            now = dt.datetime.now(dt.UTC).astimezone()
+        moment = now.time()
+        weekday_bit = day_bit(now.date())
+        for window in current:
+            if not window.enabled or not (window.mask & weekday_bit):
+                continue
+            if window.start <= moment < window.stop:
+                return window
+        return None
+
     @staticmethod
     def _same_windows(left: Sequence[TouWindow], right: Sequence[TouWindow]) -> bool:
         """Whether two sets of windows are exactly the same."""
@@ -960,17 +1045,29 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             if old.mode != new.mode or old.power != new.power:
                 changed.append(
-                    f"venster {number}: {old.mode} {old.power}% \u2192 "
-                    f"{new.mode} {new.power}%"
+                    self._t(
+                        "log.window_change_mode",
+                        n=number,
+                        old_mode=old.mode,
+                        old_power=old.power,
+                        new_mode=new.mode,
+                        new_power=new.power,
+                    )
                 )
             else:
                 changed.append(
-                    f"venster {number}: {old.start:%H:%M}\u2013{old.stop:%H:%M} \u2192 "
-                    f"{new.start:%H:%M}\u2013{new.stop:%H:%M}"
+                    self._t(
+                        "log.window_change_time",
+                        n=number,
+                        old_start=f"{old.start:%H:%M}",
+                        old_stop=f"{old.stop:%H:%M}",
+                        new_start=f"{new.start:%H:%M}",
+                        new_stop=f"{new.stop:%H:%M}",
+                    )
                 )
         parts = [plan.summary]
         if changed:
-            parts.append("Gewijzigd: " + "; ".join(changed) + ".")
+            parts.append(self._t("log.replan_changed", changes="; ".join(changed)))
         try:
             before = windows_cost(
                 current, slots, dt.datetime.now(dt.UTC).astimezone()
@@ -979,7 +1076,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 target, slots, dt.datetime.now(dt.UTC).astimezone()
             )
             if before > after:
-                parts.append(f"Verwacht voordeel: \u20ac{before - after:.2f}.")
+                parts.append(self._t("log.replan_benefit", amount=before - after))
         except Exception:  # pragma: no cover - cost estimate is best effort
             pass
         return " ".join(part for part in parts if part)
@@ -998,11 +1095,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         voltage = self.data.get("min_cell_voltage")
         if voltage is None or voltage >= threshold:
             return None
-        return (
-            f"Automatisering gestopt: laagste celspanning {voltage} mV is onder de "
-            f"drempel van {threshold} mV. Laad de batterij bij via de SEMS/SolarGo "
-            "app en zet de automatisering daarna weer aan."
-        )
+        return self._t("log.guard", voltage=voltage, threshold=threshold)
 
     def _apply_cell_guard(self) -> bool:
         """Stop the automation when the battery is too flat. Returns ``True``."""
@@ -1018,14 +1111,23 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_auto_replan(self, *, force: bool = False) -> Plan | None:
         """Re-check the plan and apply it when it is no longer optimal.
 
-        Runs every quarter hour. When the freshly planned windows differ from the
-        ones on the inverter, the new plan is written and the reason is logged.
-        Returns the applied :class:`Plan`, or ``None`` when nothing changed (or
-        auto-replanning is paused).
+        Runs every quarter hour, a minute before the boundary. When the freshly
+        planned windows differ from the ones on the inverter, the new plan is
+        written and the reason is logged. Returns the applied :class:`Plan`, or
+        ``None`` when nothing changed (or auto-replanning is paused).
+
+        A window that is running right now is never re-planned: the inverter only
+        switches a window on about a minute after its configured start, and
+        re-planning mid-window drops the slots that have already elapsed, which
+        slid the window a quarter hour later on every re-check. ``force=True``
+        overrides the pause *and* this guard (an explicit "replan now").
         """
         if not self.auto_replan_enabled and not force:
             return None
         if self._apply_cell_guard():
+            return None
+        if not force and self._active_window() is not None:
+            _LOGGER.debug("Auto-replan skipped: a Time-of-Use window is running")
             return None
         current = self._current_windows()
         if current is None:

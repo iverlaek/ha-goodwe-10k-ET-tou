@@ -70,6 +70,9 @@ automate them from scripts, automations and dashboards.
   **log card** (`custom:goodwe-tou-log-card`).
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
+- **Dutch or English**: chosen at installation and changeable in the options. It
+  translates the planner's reasoning, the activity log, the entity names and the
+  bundled cards, while the entity *ids* stay fixed.
 - Robust against a dongle that is **shared** with another integration: reads
   ignore foreign frames (two matching reads plus a structural check) and every
   write is confirmed by reading it back, so a change cannot silently revert.
@@ -97,15 +100,34 @@ Copy the `custom_components/goodwe_tou` folder into your Home Assistant
 | Host | `192.168.20.13` | IP address of the GoodWe Wi-Fi/LAN dongle |
 | UDP port | `8899` | GoodWe local protocol port |
 | Modbus address | `247` | Communication address of the inverter |
+| Language | the HA language, else `Nederlands` | The language the integration speaks (Dutch or English) |
 
 The flow probes the inverter before creating the entry, so a wrong host or a
 dongle that is offline is reported immediately.
 
 The poll interval (seconds, `0` to disable polling) can be changed in the
 integration **Configure** dialog. The same dialog holds the planner's boundary
-conditions (see [Cheapest hours](#cheapest-hours)) and the Tibber price sensor
-(`tibber_prices`, on by default; `tibber_home` when your account has several
-homes).
+conditions (see [Cheapest hours](#cheapest-hours)), the language, the window the
+[manual buttons](#manual-charge--discharge) drive (`manual_window`, default `4`)
+and the Tibber price sensor (`tibber_prices`, on by default; `tibber_home` when
+your account has several homes).
+
+### Language
+
+Pick **Nederlands** or **English** at installation; the form pre-selects the Home
+Assistant language when the integration speaks it. The choice drives the
+planner's reasons and notes, the activity log, the entity names and the bundled
+cards. You can change it later in the **Configure** dialog.
+
+Entity *ids* never change with the language (they are pinned to
+`goodwe_time_of_use_*`), so a dashboard or automation keeps working after a
+switch. The bundled cards follow the same language automatically — they read it
+from the activity sensor — and each card also accepts a `language:` override:
+
+```yaml
+type: custom:goodwe-tou-planner-card
+language: en
+```
 
 ## Entities
 
@@ -122,6 +144,10 @@ With the default device name the entities are:
 | `button.goodwe_time_of_use_read_from_inverter` | Read the schedule from the inverter |
 | `button.goodwe_time_of_use_apply_to_inverter` | Apply the schedule to the inverter (verified) |
 | `button.goodwe_time_of_use_set_cheapest_hours` | Plan + apply the cheapest hours |
+| `button.goodwe_time_of_use_auto_eco_mode` | Resume the automation (ECO + re-check on) |
+| `button.goodwe_time_of_use_manual_override` | Pause the automation, keep the windows |
+| `button.goodwe_time_of_use_manual_charge` | Make the manual window charge now |
+| `button.goodwe_time_of_use_manual_discharge` | Make the manual window discharge now |
 | `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
 | `sensor.goodwe_time_of_use_plan` | Last computed plan: number of windows, with `reasons` (per window) and `notes` as attributes |
 | `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
@@ -150,6 +176,21 @@ The **power** number is *signed*:
 
 Setting a non-zero value also enables the window's switch; setting `0` turns it
 off. The integration handles the sign for you.
+
+### Manual charge / discharge
+
+`button.goodwe_time_of_use_manual_charge` and
+`button.goodwe_time_of_use_manual_discharge` force the battery to charge or
+discharge **now**. They only flip the **direction and power** of one window —
+window 4 by default, changeable with the `manual_window` addon option — and leave
+that window's start, stop and days exactly as you set them. They are **mutually
+exclusive** (one window has one direction) and pressing the direction that is
+already running switches the window off again. Pressing either button also pauses
+the automatic re-check, so the next quarter-hour cannot undo your choice; pick
+**Auto/ECO mode** to hand control back to the planner.
+
+On the dashboard they only appear while the automation is paused. See the
+[manual buttons](#manual-charge--discharge-buttons) example below.
 
 ## The bundled card
 
@@ -540,8 +581,166 @@ automation:
 
 ## A dashboard
 
-An example dashboard that uses the bundled card is in
-[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml).
+A ready-to-paste dashboard is in
+[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the
+read-only overview, the planner, the Tibber price card, the manual
+charge/discharge buttons and the activity log. Create a dashboard
+(**Settings → Dashboards → Add dashboard → New dashboard from scratch**), open
+the **raw configuration editor** and paste this in:
+
+```yaml
+title: GoodWe TOU
+views:
+  - title: Time of Use
+    path: tou
+    icon: mdi:battery-clock-outline
+    cards:
+      - type: custom:goodwe-tou-card
+        title: GoodWe Time-of-Use
+        soc_entity: sensor.battery_state_of_charge
+        hours_back: 24
+
+      - type: custom:goodwe-tou-planner-card
+        title: Laadplanning
+        price_entity: sensor.average_electricity_price
+
+      # Manual charge / discharge. Only visible while the automation is paused
+      # (Auto re-check off). They flip the direction of one window - window 4 by
+      # default, see the "manual_window" addon option - and leave its start, stop
+      # and days alone. Pressing the active direction again switches it off.
+      - type: conditional
+        conditions:
+          - entity: switch.goodwe_time_of_use_auto_herberekening
+            state_not: "on"
+        card:
+          type: horizontal-stack
+          cards:
+            - type: custom:button-card
+              entity: button.goodwe_time_of_use_manual_charge
+              name: Handmatig laden
+              icon: mdi:battery-arrow-up
+              show_state: false
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.goodwe_time_of_use_manual_charge
+              styles:
+                icon:
+                  - color: |
+                      [[[
+                        var p = hass.states['number.goodwe_time_of_use_window_4_power'];
+                        return p && Number(p.state) < 0 ? '#4caf50' : 'var(--disabled-text-color)';
+                      ]]]
+            - type: custom:button-card
+              entity: button.goodwe_time_of_use_manual_discharge
+              name: Handmatig ontladen
+              icon: mdi:battery-arrow-down
+              show_state: false
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.goodwe_time_of_use_manual_discharge
+              styles:
+                icon:
+                  - color: |
+                      [[[
+                        var p = hass.states['number.goodwe_time_of_use_window_4_power'];
+                        return p && Number(p.state) > 0 ? '#ff9800' : 'var(--disabled-text-color)';
+                      ]]]
+
+      # Day-ahead price card, fed by the integration's Tibber price sensor.
+      - type: custom:apexcharts-card
+        graph_span: 2d
+        span:
+          start: day
+        now:
+          show: true
+          label: nu
+        header:
+          show: true
+          show_states: true
+          colorize_states: true
+          title: Stroomprijs vandaag & morgen (€/kWh)
+        update_interval: 5m
+        yaxis:
+          - id: Prijs
+            decimals: 2
+        series:
+          - entity: sensor.goodwe_time_of_use_stroomprijzen
+            name: Tibber
+            type: column
+            float_precision: 3
+            opacity: 1
+            stroke_width: 2
+            color_threshold:
+              - value: -0.1
+                color: "#000fff"
+              - value: 0
+                color: "#00ffd5"
+              - value: 0.1
+                color: "#ff8000"
+              - value: 0.2
+                color: "#0080ff"
+              - value: 0.3
+                color: "#ff2a00"
+              - value: 1
+                color: "#ff00d4"
+            data_generator: |
+              return entity.attributes.prices.map((record) => {
+                return [new Date(record.time).getTime(), record.price];
+              });
+
+      - type: custom:goodwe-tou-log-card
+        title: Logboek
+
+      - type: entities
+        title: Status
+        show_header_toggle: false
+        entities:
+          - entity: button.goodwe_time_of_use_auto_eco_mode
+            name: Auto/ECO Mode (automatisch)
+          - entity: button.goodwe_time_of_use_manual_override
+            name: Manual override (pauzeer automatisering)
+          - entity: switch.goodwe_time_of_use_eco_mode
+            name: ECO mode (Time-of-Use active)
+          - entity: sensor.goodwe_time_of_use_laagste_celspanning
+          - entity: sensor.battery_state_of_charge
+          - entity: sensor.battery_power
+          - entity: sensor.average_electricity_price
+          - entity: sensor.energy_production_today_remaining
+```
+
+The bundled `custom:goodwe-tou-*` cards are served by the integration itself, so
+they need no extra resources. The example also uses the HACS frontend cards
+[`button-card`](https://github.com/custom-cards/button-card) and
+[`apexcharts-card`](https://github.com/RomRider/apexcharts-card).
+
+### Manual charge / discharge buttons
+
+The `conditional` card above shows two buttons **only while the automation is
+paused** (the `switch.goodwe_time_of_use_auto_herberekening` is off). They flip
+the direction of the window named by the `manual_window` addon option (window 4
+by default) and leave its start, stop and days alone; the icon lights up green
+while charging and orange while discharging. Pressing the active direction again
+switches the window off. Change the two `number..._window_4_power` references if
+you picked a different `manual_window`.
+
+If you do not want the HACS `button-card`, a plain `entities` card works too:
+
+```yaml
+type: conditional
+conditions:
+  - entity: switch.goodwe_time_of_use_auto_herberekening
+    state_not: "on"
+card:
+  type: entities
+  title: Handmatig
+  entities:
+    - button.goodwe_time_of_use_manual_charge
+    - button.goodwe_time_of_use_manual_discharge
+```
 
 ### A compact status card
 
@@ -566,7 +765,7 @@ cards:
     icon: mdi:battery-clock-outline
     state_display: |
       [[[
-        var auto = entity.state;
+        var auto = (entity && entity.state) || 'off';
         var eco = (hass.states['switch.goodwe_time_of_use_eco_mode'] || {}).state;
         var label = auto === 'on' ? 'Auto/ECO' : 'Handmatig';
         var sub = auto === 'on' ? (eco === 'on' ? 'ECO-modus aan' : 'ECO-modus uit')
@@ -579,7 +778,7 @@ cards:
     styles:
       icon:
         - color: |
-            [[[ return entity.state === 'on' ? '#4caf50' : '#ff9800'; ]]]
+            [[[ return (entity && entity.state) === 'on' ? '#4caf50' : '#ff9800'; ]]]
     triggers_update:
       - switch.goodwe_time_of_use_auto_herberekening
       - switch.goodwe_time_of_use_eco_mode

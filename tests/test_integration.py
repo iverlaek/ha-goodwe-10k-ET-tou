@@ -22,6 +22,7 @@ from custom_components.goodwe_tou import _recheck_minutes
 from custom_components.goodwe_tou.const import (
     CONF_CHARGE_WINDOWS,
     CONF_DISCHARGE_WINDOWS,
+    CONF_LANGUAGE,
     CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
     CONF_PRICE_SOURCE,
@@ -31,6 +32,7 @@ from custom_components.goodwe_tou.const import (
     DOMAIN,
 )
 from custom_components.goodwe_tou.goodwe_udp import GoodweRejectedError, GoodweUdpClient
+from custom_components.goodwe_tou.registers import TouWindow
 
 BASE = 47515
 
@@ -125,6 +127,8 @@ async def test_setup_creates_entities(
     assert "button.goodwe_time_of_use_read_from_inverter" in ids
     assert "button.goodwe_time_of_use_apply_to_inverter" in ids
     assert "button.goodwe_time_of_use_set_cheapest_hours" in ids
+    assert "button.goodwe_time_of_use_manual_charge" in ids
+    assert "button.goodwe_time_of_use_manual_discharge" in ids
 
     start = hass.states.get("time.goodwe_time_of_use_window_1_start")
     stop = hass.states.get("time.goodwe_time_of_use_window_1_stop")
@@ -137,6 +141,11 @@ async def test_setup_creates_entities(
     assert power.state == "-100.0"
     assert days.state == "sun,mon,tue,wed,thu,fri,sat"
     assert eco.state == "on"
+
+    # The default language is Dutch: translated names, pinned ids.
+    activity = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    assert "Activiteitenlogboek" in activity.name
+    assert activity.attributes["language"] == "nl"
 
     # no more select entities
     assert not any(i.startswith("select.goodwe_time_of_use") for i in ids)
@@ -1091,16 +1100,148 @@ async def test_log_size_option_trims_the_activity_log(
 
 
 def test_recheck_minutes_are_configurable(hass: HomeAssistant):
-    """The re-check schedule follows the interval, but stays aligned to the hour."""
+    """The re-check schedule follows the interval, a minute before the boundary."""
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_RECHECK_MINUTES: 30})
-    assert _recheck_minutes(entry) == [0, 30]
+    assert _recheck_minutes(entry) == [29, 59]
 
     # An interval that does not divide an hour falls back to the default.
     odd = MockConfigEntry(domain=DOMAIN, options={CONF_RECHECK_MINUTES: 7})
-    assert _recheck_minutes(odd) == [0, 15, 30, 45]
+    assert _recheck_minutes(odd) == [14, 29, 44, 59]
 
     default = MockConfigEntry(domain=DOMAIN)
-    assert _recheck_minutes(default) == [0, 15, 30, 45]
+    assert _recheck_minutes(default) == [14, 29, 44, 59]
+
+
+@pytest.mark.asyncio
+async def test_active_window_detection(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """A window is active only inside its start/stop window and on its day."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.data["windows"] = {
+        1: TouWindow(
+            start=dt.time(10, 0), stop=dt.time(11, 0), mode="discharge", power=100
+        ),
+        2: TouWindow(start=dt.time(0, 0), stop=dt.time(0, 0), mode="off", power=0),
+        3: TouWindow(start=dt.time(0, 0), stop=dt.time(0, 0), mode="off", power=0),
+        4: TouWindow(start=dt.time(0, 0), stop=dt.time(0, 0), mode="off", power=0),
+    }
+
+    monday = dt.datetime(2026, 1, 5, 10, 30, tzinfo=dt.UTC)
+    assert coordinator._active_window(monday) is not None
+    assert coordinator._active_window(monday.replace(hour=9)) is None
+    assert coordinator._active_window(monday.replace(hour=11)) is None
+
+    # A disabled window never counts, even inside its start/stop window.
+    coordinator.data["windows"][1] = TouWindow(
+        start=dt.time(10, 0), stop=dt.time(11, 0), mode="off", power=0
+    )
+    assert coordinator._active_window(monday) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_replan_leaves_a_running_window_alone(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """Re-planning mid-window used to slide the window a quarter hour each time."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    running = TouWindow(
+        start=dt.time(10, 0), stop=dt.time(11, 0), mode="discharge", power=100
+    )
+    with (
+        patch.object(coordinator, "_active_window", return_value=running),
+        patch.object(
+            coordinator, "_plan_cheapest_hours", side_effect=AssertionError("planned")
+        ),
+    ):
+        result = await coordinator.async_auto_replan()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_manual_charge_and_discharge_buttons(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The manual buttons flip one window's direction and pause the re-check."""
+    writes: list[tuple[int, int]] = []
+
+    def _write(register: int, value: int) -> None:
+        writes.append((register, value))
+        if BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        assert coordinator.auto_replan_enabled is True
+
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.goodwe_time_of_use_manual_charge"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    window = coordinator.data["windows"][4]
+    assert window.mode == "charge"
+    assert window.power == 100
+    # start/stop/days of the chosen window are left alone
+    assert window.start == dt.time(22, 15)
+    assert window.stop == dt.time(23, 0)
+    assert coordinator.auto_replan_enabled is False
+    assert coordinator.manual_mode() == "charge"
+    assert (
+        hass.states.get("sensor.goodwe_time_of_use_activity_log")
+        .attributes["entries"][0]["action"]
+        == "manual_mode"
+    )
+
+    # Pressing the other direction flips the same window (mutual exclusion) ...
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.goodwe_time_of_use_manual_discharge"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert coordinator.data["windows"][4].mode == "discharge"
+    assert coordinator.data["windows"][4].power == 100
+
+    # ... and pressing the active direction again switches the window off.
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+    ):
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.goodwe_time_of_use_manual_discharge"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert coordinator.data["windows"][4].mode == "off"
+    assert coordinator.manual_mode() == "off"
 
 
 @pytest.mark.asyncio
@@ -1337,6 +1478,41 @@ async def test_options_flow_offers_a_price_source(
     keys = {str(key) for key in result["data_schema"].schema}
     assert "price_source" in keys
     assert "price_entity" in keys
+
+
+@pytest.mark.asyncio
+async def test_options_flow_offers_a_language(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The Configure dialog lets the user change the language."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == "form"
+    keys = {str(key) for key in result["data_schema"].schema}
+    assert "language" in keys
+
+
+@pytest.mark.asyncio
+async def test_language_option_translates_entity_names(
+    hass: HomeAssistant, store: list[int]
+):
+    """The language chosen at install translates the names but not the ids."""
+    entry = _entry_with_options(hass, **{CONF_LANGUAGE: "en"})
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    # The entity id is pinned, so the translated name never moves the entity ...
+    activity = hass.states.get("sensor.goodwe_time_of_use_activity_log")
+    assert activity is not None
+    assert "Activity log" in activity.name
+    # ... and the cards read the language from the activity sensor.
+    assert activity.attributes["language"] == "en"
+    window = hass.states.get("time.goodwe_time_of_use_window_1_start")
+    assert "Window 1 start" in window.name
 
 
 @pytest.mark.asyncio

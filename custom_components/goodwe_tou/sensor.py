@@ -15,6 +15,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_TIBBER_PRICES,
     DEFAULT_TIBBER_PRICES,
+    DEVICE_NAME,
+    DEVICE_SLUG,
     DOMAIN,
     MANUFACTURER,
     MODEL,
@@ -58,7 +60,14 @@ class TouActivitySensor(GoodweTouEntity, SensorEntity):
     _unrecorded_attributes = frozenset({"entries"})
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(coordinator, "activity_log", "Activity log", "mdi:history")
+        super().__init__(
+            coordinator,
+            "activity_log",
+            coordinator._t("entity.activity_log"),
+            "mdi:history",
+            domain="sensor",
+            object_id="activity_log",
+        )
 
     @property
     def native_value(self) -> int:
@@ -74,6 +83,8 @@ class TouActivitySensor(GoodweTouEntity, SensorEntity):
             "last_time": latest.get("time") if latest else None,
             "last_action": latest.get("action") if latest else None,
             "last_result": latest.get("result") if latest else None,
+            # The cards read the language from here when they have no override.
+            "language": self.coordinator.language,
         }
 
 
@@ -89,7 +100,12 @@ class TouCellVoltageSensor(GoodweTouEntity, SensorEntity):
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
         super().__init__(
-            coordinator, "min_cell_voltage", "Laagste celspanning", "mdi:battery-heart"
+            coordinator,
+            "min_cell_voltage",
+            coordinator._t("entity.min_cell_voltage"),
+            "mdi:battery-heart",
+            domain="sensor",
+            object_id="laagste_celspanning",
         )
 
     @property
@@ -114,7 +130,14 @@ class TouPlanSensor(GoodweTouEntity, SensorEntity):
     _unrecorded_attributes = frozenset({"windows", "reasons", "notes"})
 
     def __init__(self, coordinator: GoodweTouCoordinator) -> None:
-        super().__init__(coordinator, "plan", "Plan", "mdi:calendar-clock")
+        super().__init__(
+            coordinator,
+            "plan",
+            coordinator._t("entity.plan"),
+            "mdi:calendar-clock",
+            domain="sensor",
+            object_id="plan",
+        )
 
     @property
     def native_value(self) -> int:
@@ -159,10 +182,12 @@ class TouPricesSensor(CoordinatorEntity[TibberPriceCoordinator], SensorEntity):
     ) -> None:
         super().__init__(prices)
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_tibber_prices"
-        self._attr_name = "Stroomprijzen"
+        self._attr_name = coordinator._t("entity.prices")
+        # Pin the entity id so translating the name never moves it.
+        self.entity_id = f"sensor.{DEVICE_SLUG}_stroomprijzen"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.config_entry.entry_id)},
-            name="GoodWe Time-of-Use",
+            name=DEVICE_NAME,
             manufacturer=MANUFACTURER,
             model=MODEL,
             configuration_url=f"http://{coordinator.client.host}",

@@ -1,0 +1,80 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "GoodWe Time-of-Use",
+        "description": "Verbind met de GoodWe Wi-Fi/LAN-dongle die met de omvormer praat.",
+        "data": {
+          "host": "Host",
+          "port": "UDP-poort",
+          "comm_addr": "Modbus-adres",
+          "language": "Taal"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kon de omvormer niet bereiken. Controleer de host, de poort en of de dongle online is.",
+      "unknown": "Onverwachte fout."
+    },
+    "abort": {
+      "already_configured": "Deze omvormer is al ingesteld."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "GoodWe Time-of-Use-opties",
+        "data": {
+          "language": "Taal",
+          "scan_interval": "Poll-interval (seconden, 0 = uit)",
+          "price_source": "Prijsbron voor de planner (ENTSO-e of Tibber)",
+          "price_entity": "Prijsentiteit (kwartierverwachting)",
+          "soc_entity": "Entiteit batterij-laadstatus",
+          "pv_entity": "Entiteit resterende PV-verwachting",
+          "capacity_kwh": "Batterijcapaciteit (kWh)",
+          "power_kw": "Laad-/ontlaadvermogen (kW, legacy)",
+          "charge_kw": "Max. laadvermogen (kW)",
+          "discharge_kw": "Max. ontlaadvermogen (kW)",
+          "standby_kw": "Standby-verbruik van het huis (kW)",
+          "export_hours": "Max. terugleverduur op vol vermogen (uur)",
+          "export_limit": "Terugleverlimiet (W)",
+          "target_soc": "Doel-laadstatus (%)",
+          "min_soc": "Minimale laadstatus (%)",
+          "pv_factor": "PV-kortingsfactor (0-1)",
+          "rte": "Rendement batterij rondreis (0,1-1)",
+          "charge_windows": "Aantal laadvensters (0-4)",
+          "discharge_windows": "Aantal ontlaadvensters (0-4)",
+          "window_power": "Vermogen van geplande vensters (%)",
+          "manual_window": "Venster voor de knoppen handmatig laden/ontladen (1-4)",
+          "recheck_minutes": "Herberekeningsinterval (minuten)",
+          "log_size": "Grootte activiteitenlogboek (regels)",
+          "min_cell_voltage": "Stopdrempel lage celspanning (mV, 0 = uit)",
+          "tibber_prices": "Tibber-dagprijzen tonen (prijssensor)",
+          "tibber_home": "Tibber-huisnaam (leeg = eerste/enige huis)"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_cheapest_hours": {
+      "name": "Goedkoopste uren instellen",
+      "description": "Plan de vier Time-of-Use-vensters op basis van de prijsverwachting: laad vol in de goedkoopste uren en ontlaad in de duurste (begrensd zodat de batterij niet te vroeg leegloopt)."
+    },
+    "calculate_cheapest_hours": {
+      "name": "Goedkoopste uren berekenen",
+      "description": "Bereken de goedkoopste laaduren en duurste ontlaaduren uit de prijsverwachting en geef het plan terug met de reden per venster, zonder naar de omvormer te schrijven."
+    },
+    "set_windows": {
+      "name": "Vensters instellen",
+      "description": "Schrijf een expliciete lijst Time-of-Use-vensters naar de omvormer (start, stop, getekend vermogen en dagen)."
+    },
+    "forecast_soc": {
+      "name": "Laadstatus voorspellen",
+      "description": "Voorspel de laadstatus van de batterij van nu tot het einde van morgen, volgens de Time-of-Use-vensters die nu op de omvormer staan. Geeft een lijst met tijd/laadstatus-punten terug."
+    },
+    "get_activity": {
+      "name": "Activiteitenlogboek ophalen",
+      "description": "Geef het logboek van wijzigingen die naar de omvormer zijn gestuurd terug, nieuwste eerst, optioneel gefilterd op venster en resultaat."
+    }
+  }
+}

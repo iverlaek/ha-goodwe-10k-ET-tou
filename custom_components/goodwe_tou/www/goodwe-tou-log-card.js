@@ -18,22 +18,132 @@
  *   prefix: goodwe_time_of_use                # optional entity-id prefix
  *   sensor: sensor.goodwe_time_of_use_activity_log   # optional, refresh trigger
  *   limit: 200                                # optional, entries fetched
+ *   language: en                              # optional, overrides the language
  */
 
-const CARD_VERSION = "0.7.5";
+const CARD_VERSION = "1.0.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
-const ACTION_LABELS = {
-  apply: "Toegepast",
-  set_windows: "Plan toegepast",
-  cheapest_hours: "Optimale prijzen",
-  auto_replan: "Automatisch herberekend",
-  window_time: "Tijd gewijzigd",
-  window_power: "Vermogen gewijzigd",
-  window_days: "Dagen gewijzigd",
-  eco: "ECO-modus",
-  mode: "Auto/ECO of override",
+// Everything the card says, per language. The Dutch table mirrors the original
+// card text exactly; the English table is the translation. A value may be a
+// function when it takes an argument (a count, a percentage).
+const LANGS = {
+  nl: {
+    title: "Logboek",
+    result: "Resultaat",
+    nr: "Nr",
+    all: "Alles",
+    ok: "Gelukt",
+    error: "Mislukt",
+    allWindows: "Alle",
+    changes: (n) => `${n} wijzigingen`,
+    changesOf: (shown, total) => `${shown} van ${total} wijzigingen`,
+    emptyFiltered: "Geen wijzigingen voor deze filters.",
+    emptyNone: "Nog geen wijzigingen naar de omvormer gestuurd.",
+    note: (limit) => `Nieuwste ${limit} wijzigingen uit het logboek van de integratie.`,
+    changeFallback: "Wijziging",
+    badgeOk: "gelukt",
+    badgeError: "mislukt",
+    allWindowsOff: "Alle vensters uit",
+    loadFailed: "Kon het logboek niet laden",
+    haUnavailable: "Home Assistant is niet beschikbaar",
+    charge: "laden",
+    discharge: "ontladen",
+    off: "uit",
+    powerCharge: (n) => `${n}% laden`,
+    powerDischarge: (n) => `+${n}% ontladen`,
+    powerOff: "0% uit",
+    ecoMode: "ECO-modus",
+    eco: "ECO",
+    general: "algemeen",
+    dayLabels: {
+      mon: "ma",
+      tue: "di",
+      wed: "wo",
+      thu: "do",
+      fri: "vr",
+      sat: "za",
+      sun: "zo",
+    },
+    noDays: "geen",
+    everyDay: "elke dag",
+    weekdays: "ma\u2013vr",
+    weekend: "za\u2013zo",
+    actions: {
+      apply: "Toegepast",
+      set_windows: "Plan toegepast",
+      cheapest_hours: "Optimale prijzen",
+      auto_replan: "Automatisch herberekend",
+      window_time: "Tijd gewijzigd",
+      window_power: "Vermogen gewijzigd",
+      window_days: "Dagen gewijzigd",
+      eco: "ECO-modus",
+      mode: "Auto/ECO of override",
+      manual_mode: "Handmatig laden/ontladen",
+    },
+  },
+  en: {
+    title: "Log",
+    result: "Result",
+    nr: "No.",
+    all: "All",
+    ok: "Succeeded",
+    error: "Failed",
+    allWindows: "All",
+    changes: (n) => `${n} changes`,
+    changesOf: (shown, total) => `${shown} of ${total} changes`,
+    emptyFiltered: "No changes for these filters.",
+    emptyNone: "No changes sent to the inverter yet.",
+    note: (limit) => `Newest ${limit} changes from the integration's log.`,
+    changeFallback: "Change",
+    badgeOk: "succeeded",
+    badgeError: "failed",
+    allWindowsOff: "All windows off",
+    loadFailed: "Could not load the log",
+    haUnavailable: "Home Assistant is not available",
+    charge: "charge",
+    discharge: "discharge",
+    off: "off",
+    powerCharge: (n) => `${n}% charging`,
+    powerDischarge: (n) => `+${n}% discharging`,
+    powerOff: "0% off",
+    ecoMode: "ECO mode",
+    eco: "ECO",
+    general: "general",
+    dayLabels: {
+      mon: "Mon",
+      tue: "Tue",
+      wed: "Wed",
+      thu: "Thu",
+      fri: "Fri",
+      sat: "Sat",
+      sun: "Sun",
+    },
+    noDays: "none",
+    everyDay: "every day",
+    weekdays: "Mon\u2013Fri",
+    weekend: "Sat\u2013Sun",
+    actions: {
+      apply: "Applied",
+      set_windows: "Plan applied",
+      cheapest_hours: "Cheapest hours",
+      auto_replan: "Automatically re-planned",
+      window_time: "Time changed",
+      window_power: "Power changed",
+      window_days: "Days changed",
+      eco: "ECO mode",
+      mode: "Auto/ECO or override",
+      manual_mode: "Manual charge/discharge",
+    },
+  },
+};
+
+// Map any language tag (nl, nl-NL, en-GB, ...) onto a language we ship.
+const resolveLangCode = (value) => {
+  const code = String(value || "").toLowerCase();
+  if (code.startsWith("en")) return "en";
+  return "nl";
 };
 
 const pad = (value) => String(value).padStart(2, "0");
@@ -49,59 +159,6 @@ const formatTime = (iso) => {
   const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   if (sameDay) return hm;
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${hm}`;
-};
-
-const formatPower = (value) => {
-  const n = Number(value) || 0;
-  if (n < 0) return `${n}% laden`;
-  if (n > 0) return `+${n}% ontladen`;
-  return "0% uit";
-};
-
-const formatAction = (value) => {
-  const n = Number(value) || 0;
-  if (n < 0) return "laden";
-  if (n > 0) return "ontladen";
-  return "uit";
-};
-
-const DAY_NL = {
-  mon: "ma",
-  tue: "di",
-  wed: "wo",
-  thu: "do",
-  fri: "vr",
-  sat: "za",
-  sun: "zo",
-};
-
-const formatDays = (text) => {
-  const value = String(text || "").toLowerCase().trim();
-  if (!value || value === "none" || value === "off") return "geen";
-  if (value.includes("all") || value.includes("every")) return "elke dag";
-  if (value.includes("weekday")) return "ma\u2013vr";
-  if (value.includes("weekend")) return "za\u2013zo";
-  const parts = value.split(/[,\s]+/).filter(Boolean);
-  if (parts.length && parts.every((part) => DAY_NL[part])) {
-    return parts.map((part) => DAY_NL[part]).join(", ");
-  }
-  return String(text);
-};
-
-const fieldLabel = (field) => {
-  if (field === "eco_mode") return "ECO-modus";
-  return String(field || "");
-};
-
-const formatValue = (field, value) => {
-  if (value === null || value === undefined) return "\u2013";
-  if (/_power$/.test(field)) return formatPower(value);
-  if (/_days$/.test(field)) return formatDays(value);
-  if (field === "eco_mode") {
-    if (value === "eco") return "ECO";
-    if (value === "general") return "algemeen";
-  }
-  return String(value);
 };
 
 const touchesWindow = (entry, number) => {
@@ -165,12 +222,15 @@ class GoodweTouLogCard extends HTMLElement {
     this._result = "all";
     this._window = 0;
     this._error = "";
+    this._lang = "nl";
+    this._langOverride = null;
   }
 
   setConfig(config) {
     this._config = config || {};
     this._prefix = this._config.prefix || PREFIX_DEFAULT;
-    this._title = this._config.title || "Logboek";
+    this._langOverride = this._config.language || null;
+    this._title = this._config.title || null;
     this._sensor = this._config.sensor || `sensor.${this._prefix}_activity_log`;
     this._limit =
       Number(this._config.limit) > 0 ? Number(this._config.limit) : LIMIT_DEFAULT;
@@ -180,6 +240,11 @@ class GoodweTouLogCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    const lang = this._resolveLang(hass);
+    if (lang !== this._lang) {
+      this._lang = lang;
+      this._built = false;
+    }
     if (!this._built) this._build();
     if (!this._built) return;
     this._refreshIfChanged();
@@ -191,6 +256,72 @@ class GoodweTouLogCard extends HTMLElement {
 
   getCardSize() {
     return 10;
+  }
+
+  // -- language ----------------------------------------------------------
+
+  // Card `language:` override, else the language the integration speaks (on the
+  // activity sensor), else Home Assistant's own language, else Dutch.
+  _resolveLang(hass) {
+    if (this._langOverride) return resolveLangCode(this._langOverride);
+    const activity = hass && hass.states ? hass.states[this._sensor] : undefined;
+    const attr = activity && activity.attributes && activity.attributes.language;
+    if (attr) return resolveLangCode(attr);
+    const locale = hass && hass.locale && hass.locale.language;
+    if (locale) return resolveLangCode(locale);
+    return "nl";
+  }
+
+  _t(key, ...args) {
+    const table = LANGS[this._lang] || LANGS.nl;
+    const value = table[key];
+    return typeof value === "function" ? value(...args) : value;
+  }
+
+  // -- formatting --------------------------------------------------------
+
+  _formatPower(value) {
+    const n = Number(value) || 0;
+    if (n < 0) return this._t("powerCharge", n);
+    if (n > 0) return this._t("powerDischarge", n);
+    return this._t("powerOff");
+  }
+
+  _formatAction(value) {
+    const n = Number(value) || 0;
+    if (n < 0) return this._t("charge");
+    if (n > 0) return this._t("discharge");
+    return this._t("off");
+  }
+
+  _formatDays(text) {
+    const value = String(text || "").toLowerCase().trim();
+    if (!value || value === "none" || value === "off") return this._t("noDays");
+    if (value.includes("all") || value.includes("every")) return this._t("everyDay");
+    if (value.includes("weekday")) return this._t("weekdays");
+    if (value.includes("weekend")) return this._t("weekend");
+    const labels = this._t("dayLabels");
+    const parts = value.split(/[,\s]+/).filter(Boolean);
+    if (parts.length && parts.every((part) => labels[part])) {
+      return parts.map((part) => labels[part]).join(", ");
+    }
+    return String(text);
+  }
+
+  _fieldLabel(field) {
+    if (field === "eco_mode") return this._t("ecoMode");
+    return String(field || "");
+  }
+
+  _formatValue(field, value) {
+    if (value === null || value === undefined) return "\u2013";
+    if (/_power$/.test(field)) return this._formatPower(value);
+    if (/_days$/.test(field)) return this._formatDays(value);
+    if (field === "eco_mode") {
+      if (value === "eco") return this._t("eco");
+      if (value === "general") return this._t("general");
+    }
+    return String(value);
   }
 
   // -- construction ------------------------------------------------------
@@ -207,11 +338,11 @@ class GoodweTouLogCard extends HTMLElement {
         </div>
         <div class="filters">
           <div class="filter">
-            <span class="flabel">Resultaat</span>
+            <span class="flabel">${this._t("result")}</span>
             <span class="seg" id="resultseg"></span>
           </div>
           <div class="filter">
-            <span class="flabel">Nr</span>
+            <span class="flabel">${this._t("nr")}</span>
             <span class="seg" id="windowseg"></span>
           </div>
         </div>
@@ -219,7 +350,9 @@ class GoodweTouLogCard extends HTMLElement {
         <div class="note" id="note"></div>
       </ha-card>
     `;
-    root.querySelector(".title").textContent = `${this._title} (Version ${CARD_VERSION})`;
+    root.querySelector(".title").textContent = `${
+      this._title || this._t("title")
+    } (Version ${CARD_VERSION})`;
     this._countEl = root.querySelector("#count");
     this._listEl = root.querySelector("#list");
     this._noteEl = root.querySelector("#note");
@@ -227,9 +360,9 @@ class GoodweTouLogCard extends HTMLElement {
     const resultSeg = root.querySelector("#resultseg");
     this._resultBtns = [];
     for (const [value, label] of [
-      ["all", "Alles"],
-      ["ok", "Gelukt"],
-      ["error", "Mislukt"],
+      ["all", this._t("all")],
+      ["ok", this._t("ok")],
+      ["error", this._t("error")],
     ]) {
       const button = document.createElement("button");
       button.textContent = label;
@@ -246,7 +379,7 @@ class GoodweTouLogCard extends HTMLElement {
     this._windowBtns = [];
     for (const value of [0, 1, 2, 3, 4]) {
       const button = document.createElement("button");
-      button.textContent = value === 0 ? "Alle" : String(value);
+      button.textContent = value === 0 ? this._t("allWindows") : String(value);
       button.dataset.value = String(value);
       button.addEventListener("click", () => {
         this._window = value;
@@ -283,14 +416,14 @@ class GoodweTouLogCard extends HTMLElement {
       this._error = "";
     } catch (err) {
       this._entries = [];
-      this._error = (err && err.message) || "Kon het logboek niet laden";
+      this._error = (err && err.message) || this._t("loadFailed");
     }
     this._render();
   }
 
   async _callServiceWithResponse(domain, service, data) {
     const hass = this._hass;
-    if (!hass) throw new Error("Home Assistant is niet beschikbaar");
+    if (!hass) throw new Error(this._t("haUnavailable"));
     if (typeof hass.callWS === "function") {
       const result = await hass.callWS({
         type: "call_service",
@@ -326,8 +459,8 @@ class GoodweTouLogCard extends HTMLElement {
     const entries = this._entries.filter((entry) => this._matches(entry));
     this._countEl.textContent =
       entries.length === this._entries.length
-        ? `${this._entries.length} wijzigingen`
-        : `${entries.length} van ${this._entries.length} wijzigingen`;
+        ? this._t("changes", this._entries.length)
+        : this._t("changesOf", entries.length, this._entries.length);
 
     this._listEl.innerHTML = "";
     if (!entries.length) {
@@ -336,9 +469,9 @@ class GoodweTouLogCard extends HTMLElement {
       if (this._error) {
         empty.textContent = this._error;
       } else if (this._entries.length) {
-        empty.textContent = "Geen wijzigingen voor deze filters.";
+        empty.textContent = this._t("emptyFiltered");
       } else {
-        empty.textContent = "Nog geen wijzigingen naar de omvormer gestuurd.";
+        empty.textContent = this._t("emptyNone");
       }
       this._listEl.appendChild(empty);
     }
@@ -347,9 +480,7 @@ class GoodweTouLogCard extends HTMLElement {
     }
 
     if (this._noteEl) {
-      this._noteEl.textContent = this._error
-        ? ""
-        : `Nieuwste ${this._limit} wijzigingen uit het logboek van de integratie.`;
+      this._noteEl.textContent = this._error ? "" : this._t("note", this._limit);
     }
   }
 
@@ -367,12 +498,14 @@ class GoodweTouLogCard extends HTMLElement {
 
     const action = document.createElement("span");
     action.className = "eaction";
-    action.textContent = ACTION_LABELS[entry.action] || entry.action || "Wijziging";
+    action.textContent =
+      this._t("actions")[entry.action] || entry.action || this._t("changeFallback");
     head.appendChild(action);
 
     const badge = document.createElement("span");
     badge.className = `ebadge ${entry.result === "error" ? "error" : "ok"}`;
-    badge.textContent = entry.result === "error" ? "mislukt" : "gelukt";
+    badge.textContent =
+      entry.result === "error" ? this._t("badgeError") : this._t("badgeOk");
     head.appendChild(badge);
 
     row.appendChild(head);
@@ -408,7 +541,9 @@ class GoodweTouLogCard extends HTMLElement {
         line.appendChild(label);
         line.appendChild(
           document.createTextNode(
-            `${formatAction(window.power)} ${window.start}\u2013${window.stop} \u00b7 ${formatDays(window.days)}`
+            `${this._formatAction(window.power)} ${window.start}\u2013${
+              window.stop
+            } \u00b7 ${this._formatDays(window.days)}`
           )
         );
         box.appendChild(line);
@@ -419,7 +554,7 @@ class GoodweTouLogCard extends HTMLElement {
       box.className = "wins";
       const line = document.createElement("div");
       line.className = "win";
-      line.textContent = "Alle vensters uit";
+      line.textContent = this._t("allWindowsOff");
       box.appendChild(line);
       row.appendChild(box);
     }
@@ -477,25 +612,25 @@ class GoodweTouLogCard extends HTMLElement {
     const power = powerC ? powerC.new : win.power;
 
     line.appendChild(this._valueSpan("f", `${n}: `));
-    line.appendChild(this._valueSpan("act", `${formatAction(power)} `));
+    line.appendChild(this._valueSpan("act", `${this._formatAction(power)} `));
 
     if (startC || stopC) {
       line.appendChild(this._valueSpan("old", `${oldStart}\u2013${oldStop}`));
       line.appendChild(this._valueSpan("arrow", "\u2192"));
       line.appendChild(this._valueSpan("new", `${newStart}\u2013${newStop}`));
     } else if (powerC) {
-      line.appendChild(this._valueSpan("old", formatAction(powerC.old)));
+      line.appendChild(this._valueSpan("old", this._formatAction(powerC.old)));
       line.appendChild(this._valueSpan("arrow", "\u2192"));
-      line.appendChild(this._valueSpan("new", formatAction(powerC.new)));
+      line.appendChild(this._valueSpan("new", this._formatAction(powerC.new)));
     }
 
     if (daysC) {
       if (startC || stopC || powerC) {
         line.appendChild(this._valueSpan("arrow", " \u00b7 "));
       }
-      line.appendChild(this._valueSpan("old", formatDays(daysC.old)));
+      line.appendChild(this._valueSpan("old", this._formatDays(daysC.old)));
       line.appendChild(this._valueSpan("arrow", "\u2192"));
-      line.appendChild(this._valueSpan("new", formatDays(daysC.new)));
+      line.appendChild(this._valueSpan("new", this._formatDays(daysC.new)));
     }
 
     return line;
@@ -514,12 +649,12 @@ class GoodweTouLogCard extends HTMLElement {
 
     const field = document.createElement("span");
     field.className = "f";
-    field.textContent = `${fieldLabel(change.field)}: `;
+    field.textContent = `${this._fieldLabel(change.field)}: `;
     line.appendChild(field);
 
     const old = document.createElement("span");
     old.className = "old";
-    old.textContent = formatValue(change.field, change.old);
+    old.textContent = this._formatValue(change.field, change.old);
     line.appendChild(old);
 
     const arrow = document.createElement("span");
@@ -529,7 +664,7 @@ class GoodweTouLogCard extends HTMLElement {
 
     const next = document.createElement("span");
     next.className = "new";
-    next.textContent = formatValue(change.field, change.new);
+    next.textContent = this._formatValue(change.field, change.new);
     line.appendChild(next);
 
     return line;

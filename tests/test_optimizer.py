@@ -326,6 +326,29 @@ def test_plan_summary_names_the_day_of_each_window():
     assert plan.notes[0].startswith("Vensterplan")
 
 
+def test_plan_can_speak_english():
+    """``build_plan(lang="en")`` produces English reasons, notes and summary."""
+    start = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    prices = [0.05] * 96 + [0.30] * 96  # today cheap, tomorrow expensive
+    slots = _slots_from_prices(start, prices)
+    now = start + dt.timedelta(hours=12)
+    plan = optimizer.build_plan(
+        slots,
+        now,
+        soc=100,
+        capacity_kwh=24,
+        discharge_power_kw=6,
+        min_soc=20,
+        export_hours=1.0,
+        lang="en",
+    )
+    assert "today" in plan.summary
+    assert "tomorrow" in plan.summary
+    assert plan.notes[0].startswith("Window plan")
+    assert not any("vandaag" in note or "morgen" in note for note in plan.notes)
+    assert any("Most expensive" in reason.text for reason in plan.reasons)
+
+
 def test_discharge_runs_do_not_fill_the_gap_between_peaks():
     """Two peaks with a cheap gap must stay one capped block, not be merged.
 

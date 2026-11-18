@@ -22,6 +22,53 @@ views:
         title: Laadplanning
         price_entity: sensor.average_electricity_price
 
+      # Manual charge / discharge. Only visible while the automation is paused
+      # (Auto re-check off). They flip the direction of one window - window 4 by
+      # default, see the "manual_window" addon option - and leave its start, stop
+      # and days alone. Pressing the active direction again switches it off.
+      # Needs the HACS "button-card" frontend card.
+      - type: conditional
+        conditions:
+          - entity: switch.goodwe_time_of_use_auto_herberekening
+            state_not: "on"
+        card:
+          type: horizontal-stack
+          cards:
+            - type: custom:button-card
+              entity: button.goodwe_time_of_use_manual_charge
+              name: Handmatig laden
+              icon: mdi:battery-arrow-up
+              show_state: false
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.goodwe_time_of_use_manual_charge
+              styles:
+                icon:
+                  - color: |
+                      [[[
+                        var p = hass.states['number.goodwe_time_of_use_window_4_power'];
+                        return p && Number(p.state) < 0 ? '#4caf50' : 'var(--disabled-text-color)';
+                      ]]]
+            - type: custom:button-card
+              entity: button.goodwe_time_of_use_manual_discharge
+              name: Handmatig ontladen
+              icon: mdi:battery-arrow-down
+              show_state: false
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.goodwe_time_of_use_manual_discharge
+              styles:
+                icon:
+                  - color: |
+                      [[[
+                        var p = hass.states['number.goodwe_time_of_use_window_4_power'];
+                        return p && Number(p.state) > 0 ? '#ff9800' : 'var(--disabled-text-color)';
+                      ]]]
+
       # Day-ahead price card, fed by the integration's Tibber price sensor.
       # Needs the HACS "apexcharts-card" frontend card.
       - type: custom:apexcharts-card

@@ -7,6 +7,11 @@ from typing import Final
 DOMAIN: Final = "goodwe_tou"
 MANUFACTURER: Final = "GoodWe"
 MODEL: Final = "Time-of-Use (Eco Mode)"
+#: The device name every entity hangs under, and its slug. The slug is part of
+#: every entity id, so it must stay stable even though the entity names are
+#: translated.
+DEVICE_NAME: Final = "GoodWe Time-of-Use"
+DEVICE_SLUG: Final = "goodwe_time_of_use"
 
 # Config entry keys / defaults.
 CONF_HOST: Final = "host"
@@ -44,8 +49,14 @@ CONF_WINDOW_POWER: Final = "window_power"
 CONF_RECHECK_MINUTES: Final = "recheck_minutes"
 CONF_LOG_SIZE: Final = "log_size"
 CONF_MIN_CELL_VOLTAGE: Final = "min_cell_voltage"
+#: The window the manual charge/discharge buttons drive (start/stop/days are the
+#: user's; the buttons only flip its direction and power).
+CONF_MANUAL_WINDOW: Final = "manual_window"
 CONF_TIBBER_PRICES: Final = "tibber_prices"
 CONF_TIBBER_HOME: Final = "tibber_home"
+#: The language the integration speaks: the planner's reasoning, the activity
+#: log and the entity names. Chosen at installation, changeable in the options.
+CONF_LANGUAGE: Final = "language"
 
 DEFAULT_PRICE_ENTITY: Final = "sensor.average_electricity_price"
 #: Where the planner reads its forecast: an existing price entity ("entity",
@@ -85,6 +96,8 @@ DEFAULT_CHARGE_WINDOWS: Final = 2
 DEFAULT_DISCHARGE_WINDOWS: Final = 2
 #: Power percentage written into the planned windows.
 DEFAULT_WINDOW_POWER: Final = 100
+#: Which window the manual charge/discharge buttons flip.
+DEFAULT_MANUAL_WINDOW: Final = 4
 #: How often the plan is re-checked, in minutes (has to divide an hour).
 DEFAULT_RECHECK_MINUTES: Final = 15
 #: Options allowed for the re-check interval, in minutes.
@@ -101,6 +114,13 @@ DEFAULT_MIN_CELL_VOLTAGE: Final = 3000
 DEFAULT_TIBBER_PRICES: Final = True
 #: Which Tibber home to read when the account has more than one; empty = the first.
 DEFAULT_TIBBER_HOME: Final = ""
+#: The default language: Dutch, because the integration grew up in a Dutch home.
+#: The install step pre-selects the Home Assistant language when we support it.
+DEFAULT_LANGUAGE: Final = "nl"
+LANGUAGE_NL: Final = "nl"
+LANGUAGE_EN: Final = "en"
+#: The languages the integration speaks.
+LANGUAGES: Final = (LANGUAGE_NL, LANGUAGE_EN)
 
 # Price slots are 15 minutes in the ENTSO-e attribute.
 SLOT_MINUTES: Final = 15
