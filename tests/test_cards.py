@@ -113,3 +113,9 @@ def test_planner_card_has_price_graph_hover() -> None:
     assert "_updatePriceHover" in text
     assert "crosshair" in text
     assert "tooltip" in text
+
+
+def test_planner_card_logs_the_calculation_when_applying() -> None:
+    """Toepassen passes the plan summary so the activity log shows the maths."""
+    text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
+    assert "reason: this._summary" in text

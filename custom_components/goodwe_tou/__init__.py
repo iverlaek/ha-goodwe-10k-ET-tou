@@ -188,7 +188,10 @@ SERVICE_SET_WINDOWS_SCHEMA = vol.Schema(
                     }
                 )
             ],
-        )
+        ),
+        # Optional explanation of why these windows were chosen (the planner
+        # card passes the plan summary). It is stored in the activity log.
+        vol.Optional("reason"): cv.string,
     }
 )
 
@@ -426,7 +429,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 _LOGGER.warning("No GoodWe Time-of-Use entry is loaded")
                 return
             for coordinator in coordinators:
-                await coordinator.async_set_windows(call.data["windows"])
+                await coordinator.async_set_windows(
+                    call.data["windows"], reason=call.data.get("reason")
+                )
 
         hass.services.async_register(
             DOMAIN,

@@ -1295,7 +1295,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_set_export_limit(self._export_limit())
 
     async def async_set_windows(
-        self, windows: Sequence[Mapping[str, Any]]
+        self,
+        windows: Sequence[Mapping[str, Any]],
+        *,
+        reason: str | None = None,
     ) -> None:
         """Write an explicit set of windows to the inverter.
 
@@ -1304,6 +1307,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         string. The list is padded to four windows and written with read-back
         verification, so a dashboard can apply a whole plan in one request
         instead of one write per entity.
+
+        ``reason`` is an optional explanation of the choice (the planner card
+        passes the plan summary, including the battery-cost and export-spread
+        calculation); it is stored in the activity log.
         """
         plan: list[TouWindow] = []
         for item in windows:
@@ -1325,6 +1332,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             lambda: self._write_verified(self._registers_for(after)),
             changes=changes,
             windows=targets,
+            reason=reason,
             plan=True,
         )
 

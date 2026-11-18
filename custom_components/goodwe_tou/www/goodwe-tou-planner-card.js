@@ -1356,7 +1356,11 @@ class GoodweTouPlannerCard extends HTMLElement {
 
   _apply() {
     const windows = this._collectWindows();
-    this._callService("goodwe_tou", "set_windows", { windows })
+    // Carry the explanation (including the battery-cost and export-spread
+    // calculation) into the activity log, so "Toepassen" is just as visible as
+    // the auto-replan path.
+    const data = this._summary ? { windows, reason: this._summary } : { windows };
+    this._callService("goodwe_tou", "set_windows", data)
       .then(() => {
         this._dirty = false;
       })

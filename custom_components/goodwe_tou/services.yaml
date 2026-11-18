@@ -329,6 +329,15 @@ set_windows:
       required: true
       selector:
         object:
+    reason:
+      name: Reason
+      description: >-
+        Optional explanation of why these windows were chosen. The bundled
+        planner card passes the plan summary, so the battery-cost and
+        export-spread calculation also shows up in the activity log.
+      required: false
+      selector:
+        text:
 
 forecast_soc:
   name: Forecast state of charge

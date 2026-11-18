@@ -278,7 +278,8 @@ async def test_set_windows_service_writes_a_whole_plan(
                 "windows": [
                     {"start": "02:00", "stop": "05:00", "power": -80, "days": "mon"},
                     {"start": "18:30", "stop": "20:00", "power": 50, "days": "mon"},
-                ]
+                ],
+                "reason": "Inkoopprijs is met €0.050/kWh verhoogd voor batterijkosten.",
             },
             blocking=True,
         )
@@ -295,6 +296,14 @@ async def test_set_windows_service_writes_a_whole_plan(
     # the windows that were not given are turned off
     assert hass.states.get("number.goodwe_time_of_use_window_3_power").state == "0.0"
     assert hass.states.get("switch.goodwe_time_of_use_eco_mode").state == "on"
+
+    # Applying a plan logs the explanation, so the activity log shows the
+    # calculation behind the windows (the planner card passes the plan summary).
+    entry_log = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ][0]
+    assert entry_log["action"] == "set_windows"
+    assert "batterijkosten" in entry_log["reason"]
 
 
 @pytest.mark.asyncio
