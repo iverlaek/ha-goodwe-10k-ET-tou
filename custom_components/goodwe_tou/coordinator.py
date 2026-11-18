@@ -7,11 +7,13 @@ import datetime as dt
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -139,6 +141,10 @@ _READ_ATTEMPTS = 3
 #: older GoodWe Wi-Fi dongle is easily overloaded, so hammering it back-to-back
 #: only makes things worse; a short pause lets it recover.
 _RETRY_DELAY = 2.0
+#: Seconds between the delayed re-sends of a write that failed completely. A
+#: failed write is re-sent until the inverter confirms it, so the log ends on a
+#: success instead of a stale failure.
+_RETRY_INTERVAL = 60.0
 
 
 def window_to_dict(window: TouWindow) -> dict[str, Any]:
@@ -279,6 +285,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         #: Optional Tibber price coordinator backing the price sensor.
         self.price_coordinator: TibberPriceCoordinator | None = None
+        #: Writes that failed and are waiting to be re-sent (see
+        #: :meth:`_schedule_write_retry`), keyed by the kind of write so a newer
+        #: write of the same kind replaces the pending retry.
+        self._pending_writes: dict[str, dict[str, Any]] = {}
 
     # -- language ----------------------------------------------------------
 
@@ -380,6 +390,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         error: str | None = None,
         reason: str | None = None,
         attempts: int | None = None,
+        retry: int = 0,
     ) -> None:
         """Append one entry to the log and persist it."""
         self._activity.insert(
@@ -392,6 +403,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 error=error,
                 reason=reason,
                 attempts=attempts,
+                retry=retry,
             ),
         )
         trim(self._activity, self._log_size())
@@ -859,21 +871,31 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _logged(
         self,
+        key: str,
         action: str,
-        operation: Awaitable[int],
+        operation: Callable[[], Awaitable[int]],
         *,
         changes: Sequence[Mapping[str, Any]] | None = None,
         windows: Sequence[Mapping[str, Any]] | None = None,
         reason: str | None = None,
+        plan: bool = False,
     ) -> None:
-        """Run a write operation and record it in the activity log.
+        """Run a write operation, log it, and re-send it later if it fails.
+
+        ``operation`` is a zero-argument factory returning a *fresh* awaitable,
+        so the same write can be sent again after :data:`_RETRY_INTERVAL`
+        seconds. The flaky dongle sometimes drops a whole write; instead of
+        leaving the inverter misprogrammed, the write is re-sent until it is
+        confirmed, so the log ends on a success.
 
         ``operation`` resolves to the number of sends the write needed, which is
         recorded on the entry (so the log can say "3x mislukt") and added to the
-        retry counter.
+        retry counter. ``key`` identifies the write so a newer write of the same
+        kind replaces the pending retry; ``plan`` marks the full-plan writes that
+        a manual override should cancel.
         """
         try:
-            attempts = await operation
+            attempts = await operation()
         except HomeAssistantError as err:
             attempts = getattr(err, "attempts", None)
             self._count_retries(attempts)
@@ -886,7 +908,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reason=reason,
                 attempts=attempts,
             )
+            self._schedule_write_retry(
+                key,
+                action,
+                operation,
+                changes=changes,
+                windows=windows,
+                reason=reason,
+                plan=plan,
+            )
             raise
+        self._clear_write_retry(key)
         self._count_retries(attempts)
         self._record(
             action,
@@ -894,6 +926,105 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             windows=windows,
             reason=reason,
             attempts=attempts,
+        )
+
+    # -- delayed write retries ---------------------------------------------
+
+    def _schedule_write_retry(
+        self,
+        key: str,
+        action: str,
+        operation: Callable[[], Awaitable[int]],
+        *,
+        changes: Sequence[Mapping[str, Any]] | None = None,
+        windows: Sequence[Mapping[str, Any]] | None = None,
+        reason: str | None = None,
+        plan: bool = False,
+        retry: int = 0,
+    ) -> None:
+        """Queue a failed write to be sent again after :data:`_RETRY_INTERVAL`."""
+        self._clear_write_retry(key)
+        entry: dict[str, Any] = {
+            "action": action,
+            "operation": operation,
+            "changes": changes,
+            "windows": windows,
+            "reason": reason,
+            "plan": plan,
+            "retry": retry,
+            "unsub": None,
+        }
+        self._pending_writes[key] = entry
+        entry["unsub"] = async_call_later(
+            self.hass, _RETRY_INTERVAL, partial(self._run_write_retry, key)
+        )
+
+    def _clear_write_retry(self, key: str) -> None:
+        """Forget a pending retry, cancelling its timer."""
+        entry = self._pending_writes.pop(key, None)
+        if entry is not None and entry.get("unsub") is not None:
+            entry["unsub"]()
+
+    def async_cancel_pending_writes(self) -> None:
+        """Drop every pending retry, for example when the entry unloads."""
+        for key in list(self._pending_writes):
+            self._clear_write_retry(key)
+
+    def _cancel_plan_retries(self) -> None:
+        """Drop pending full-plan re-sends, e.g. when a manual override is set.
+
+        A manual choice must win from a plan the automation wanted to push, so
+        the queued re-send of that plan is dropped instead of overwriting it.
+        """
+        for key, entry in list(self._pending_writes.items()):
+            if entry.get("plan"):
+                self._clear_write_retry(key)
+
+    async def _run_write_retry(self, key: str, _now: dt.datetime | None = None) -> None:
+        """Send a previously failed write again, logging and re-queuing it."""
+        entry = self._pending_writes.get(key)
+        if entry is None:
+            return
+        # The timer has fired; forget its handle so a reschedule does not try to
+        # cancel an already-fired callback.
+        entry["unsub"] = None
+        entry["retry"] = int(entry.get("retry") or 0) + 1
+        action = entry["action"]
+        try:
+            attempts = await entry["operation"]()
+        except HomeAssistantError as err:
+            attempts = getattr(err, "attempts", None)
+            self._count_retries(attempts)
+            self._record(
+                action,
+                changes=entry["changes"],
+                windows=entry["windows"],
+                result="error",
+                error=str(err),
+                reason=entry["reason"],
+                attempts=attempts,
+                retry=entry["retry"],
+            )
+            self._schedule_write_retry(
+                key,
+                action,
+                entry["operation"],
+                changes=entry["changes"],
+                windows=entry["windows"],
+                reason=entry["reason"],
+                plan=entry["plan"],
+                retry=entry["retry"],
+            )
+            return
+        self._clear_write_retry(key)
+        self._count_retries(attempts)
+        self._record(
+            action,
+            changes=entry["changes"],
+            windows=entry["windows"],
+            reason=entry["reason"],
+            attempts=attempts,
+            retry=entry["retry"],
         )
 
     async def async_apply(self) -> None:
@@ -904,7 +1035,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mapping.update(self._export_registers())
         await self._logged(
             "apply",
-            self._write_verified(mapping),
+            "apply",
+            lambda: self._write_verified(mapping),
             windows=targets,
         )
 
@@ -921,7 +1053,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         old = self.data.get("export_limit")
         await self._logged(
             "export_limit",
-            self._write_verified(mapping),
+            "export_limit",
+            lambda: self._write_verified(mapping),
             changes=[
                 {
                     "field": "export_limit",
@@ -975,9 +1108,11 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         targets = [window_summary(number, after[number]) for number in WINDOWS]
         await self._logged(
             "set_windows",
-            self._write_verified(self._registers_for(after)),
+            "set_windows",
+            lambda: self._write_verified(self._registers_for(after)),
             changes=changes,
             windows=targets,
+            plan=True,
         )
 
     async def async_set_window_time(
@@ -987,8 +1122,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         updated = replace(window, **{kind: value})
         relative = 0 if kind == "start" else 1
         await self._logged(
+            f"window_time:{number}:{kind}",
             "window_time",
-            self._write_verified(
+            lambda: self._write_verified(
                 {base_for(number) + relative: window_registers(updated)[relative]}
             ),
             changes=window_changes({number: window}, {number: updated}),
@@ -1012,8 +1148,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         registers = window_registers(updated)
         await self._logged(
+            f"window_power:{number}",
             action,
-            self._write_verified(
+            lambda: self._write_verified(
                 {base_for(number) + 2: registers[2], base_for(number) + 3: registers[3]}
             ),
             changes=window_changes({number: window}, {number: updated}),
@@ -1025,8 +1162,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         updated = replace(window, days=days)
         registers = window_registers(updated)
         await self._logged(
+            f"window_days:{number}",
             "window_days",
-            self._write_verified({base_for(number) + 3: registers[3]}),
+            lambda: self._write_verified({base_for(number) + 3: registers[3]}),
             changes=window_changes({number: window}, {number: updated}),
         )
 
@@ -1038,7 +1176,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             old = "eco" if work_mode == ECO_WORK_MODE else "general"
         await self._logged(
             "eco",
-            self._write_verified({WORK_MODE_REGISTER: value}),
+            "eco",
+            lambda: self._write_verified({WORK_MODE_REGISTER: value}),
             changes=[
                 {
                     "field": "eco_mode",
@@ -1070,6 +1209,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Auto/ECO mode to resume the automation.
         """
         self.auto_replan_enabled = False
+        self._cancel_plan_retries()
         self._record(
             "mode",
             reason=self._t("log.manual_override"),
@@ -1104,6 +1244,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         power = self._window_power_percent()
         signed = 0 if mode == "off" else (power if mode == "discharge" else -power)
         self.auto_replan_enabled = False
+        self._cancel_plan_retries()
         await self.async_set_window_power(
             number,
             signed,
@@ -1395,11 +1536,13 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mapping = self._registers_for(after)
         mapping.update(self._export_registers(overrides))
         await self._logged(
+            "set_windows",
             action,
-            self._write_verified(mapping),
+            lambda: self._write_verified(mapping),
             changes=changes,
             windows=targets,
             reason=reason,
+            plan=True,
         )
         return plan
 

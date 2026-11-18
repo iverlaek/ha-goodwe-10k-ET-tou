@@ -46,6 +46,13 @@ def test_make_entry_records_the_attempt_count():
     assert activity.make_entry("eco")["attempts"] is None
 
 
+def test_make_entry_marks_a_delayed_retry():
+    """A delayed re-send round is marked so the log can label it."""
+    assert activity.make_entry("apply")["retry"] == 0
+    entry = activity.make_entry("apply", retry=2, result="error", error="nope")
+    assert entry["retry"] == 2
+
+
 def test_make_entry_marks_errors():
     entry = activity.make_entry("apply", result="error", error="read-back mismatch")
     assert entry["result"] == "error"

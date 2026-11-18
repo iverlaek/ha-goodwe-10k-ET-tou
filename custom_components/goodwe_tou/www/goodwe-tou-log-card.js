@@ -21,7 +21,7 @@
  *   language: en                              # optional, overrides the language
  */
 
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
@@ -44,7 +44,8 @@ const LANGS = {
     note: (limit) => `Nieuwste ${limit} wijzigingen uit het logboek van de integratie.`,
     changeFallback: "Wijziging",
     badgeOk: (n) => (n > 1 ? `gelukt (${n}x)` : "gelukt"),
-    badgeError: (n) => (n > 1 ? `${n}x mislukt` : "mislukt"),
+    badgeError: (n) => `${n || 1}x mislukt`,
+    retrySuffix: (n) => ` \u00b7 herpoging ${n}`,
     retriesNote: (today, total) =>
       `Herpogingen vandaag: ${today} (totaal ${total})`,
     allWindowsOff: "Alle vensters uit",
@@ -100,7 +101,8 @@ const LANGS = {
     note: (limit) => `Newest ${limit} changes from the integration's log.`,
     changeFallback: "Change",
     badgeOk: (n) => (n > 1 ? `succeeded (${n}x)` : "succeeded"),
-    badgeError: (n) => (n > 1 ? `${n}x failed` : "failed"),
+    badgeError: (n) => `${n || 1}x failed`,
+    retrySuffix: (n) => ` \u00b7 retry ${n}`,
     retriesNote: (today, total) =>
       `Retries today: ${today} (total ${total})`,
     allWindowsOff: "All windows off",
@@ -195,6 +197,7 @@ const STYLES = `
   .erow { display: flex; align-items: baseline; gap: 8px; }
   .etime { font-variant-numeric: tabular-nums; font-size: .82rem; color: var(--secondary-text-color); min-width: 74px; }
   .eaction { font-size: .88rem; font-weight: 600; color: var(--primary-text-color); }
+  .eretry { font-weight: 500; font-size: .76rem; color: #b26a00; }
   .ebadge { margin-left: auto; font-size: .7rem; padding: 1px 8px; border-radius: 9px; }
   .ebadge.ok { background: rgba(46,125,50,.16); color: #2e7d32; }
   .ebadge.error { background: rgba(198,40,40,.16); color: #c62828; }
@@ -517,6 +520,12 @@ class GoodweTouLogCard extends HTMLElement {
     action.className = "eaction";
     action.textContent =
       this._t("actions")[entry.action] || entry.action || this._t("changeFallback");
+    if (Number(entry.retry) > 0) {
+      const retry = document.createElement("span");
+      retry.className = "eretry";
+      retry.textContent = this._t("retrySuffix", Number(entry.retry));
+      action.appendChild(retry);
+    }
     head.appendChild(action);
 
     const badge = document.createElement("span");

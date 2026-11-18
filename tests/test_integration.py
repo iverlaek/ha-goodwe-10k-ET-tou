@@ -16,7 +16,10 @@ pytest.importorskip("pytest_homeassistant_custom_component")
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.goodwe_tou import _recheck_minutes
 from custom_components.goodwe_tou.const import (
@@ -705,6 +708,213 @@ async def test_write_retries_once_then_succeeds(
     assert retries.state == "1"
     assert retries.attributes["total"] == 1
     assert retries.attributes["last_attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_write_is_retried_after_a_delay(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
+):
+    """A write that fails completely is re-sent a minute later, until it sticks.
+
+    The dongle is flaky enough to drop a whole write; instead of leaving the
+    inverter misprogrammed, the integration keeps re-sending it, so the log's
+    newest entry ends up a success.
+    """
+    state = {"working": False}
+
+    def _write(register: int, value: int) -> None:
+        if not state["working"]:
+            return  # the overloaded dongle drops the whole write
+        if BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_windows",
+                {"windows": [{"start": "02:00", "stop": "05:00", "power": -80}]},
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+        # For now the newest entry is the failure, with the attempt count.
+        entries = hass.states.get(
+            "sensor.goodwe_time_of_use_activity_log"
+        ).attributes["entries"]
+        assert entries[0]["result"] == "error"
+        assert entries[0]["attempts"] == 3
+        assert entries[0]["retry"] == 0
+
+        # The dongle recovers; the queued re-send succeeds on the next round.
+        state["working"] = True
+        async_fire_time_changed(
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+        )
+        await hass.async_block_till_done()
+
+    entries = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ]
+    # The log ends on the successful re-send, marked as a retry.
+    assert entries[0]["result"] == "ok"
+    assert entries[0]["retry"] == 1
+    assert entries[0]["attempts"] == 1
+    assert hass.states.get("time.goodwe_time_of_use_window_1_start").state == "02:00:00"
+    # The failed round contributed its two re-sends to the tally.
+    assert hass.states.get("sensor.goodwe_time_of_use_herpogingen").state == "2"
+    # Nothing is left waiting once the write stuck.
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator._pending_writes == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_write_keeps_retrying_until_it_sticks(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
+):
+    """Every failed round is logged and queued again, not given up on."""
+    state = {"working": False}
+
+    def _write(register: int, value: int) -> None:
+        if not state["working"]:
+            return
+        if BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_windows",
+                {"windows": [{"start": "02:00", "stop": "05:00", "power": -80}]},
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+        # A second failed round is logged and queued again.
+        async_fire_time_changed(
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+        )
+        await hass.async_block_till_done()
+
+        entries = hass.states.get(
+            "sensor.goodwe_time_of_use_activity_log"
+        ).attributes["entries"]
+        assert entries[0]["result"] == "error"
+        assert entries[0]["retry"] == 1
+
+        # The third round finally sticks.
+        state["working"] = True
+        async_fire_time_changed(
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+        )
+        await hass.async_block_till_done()
+
+    entries = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ]
+    assert entries[0]["result"] == "ok"
+    assert entries[0]["retry"] == 2
+    assert entries[1]["result"] == "error"
+    assert entries[1]["retry"] == 1
+    assert hass.data[DOMAIN][entry.entry_id]._pending_writes == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_override_cancels_a_pending_plan_retry(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
+):
+    """A manual choice must win from a plan the automation still wanted to send."""
+    state = {"working": False}
+
+    def _write(register: int, value: int) -> None:
+        if not state["working"]:
+            return
+        if BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_write),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_windows",
+                {"windows": [{"start": "02:00", "stop": "05:00", "power": -80}]},
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        assert coordinator._pending_writes
+
+        await coordinator.async_set_manual_override()
+        await hass.async_block_till_done()
+        assert coordinator._pending_writes == {}
+
+        # The queued re-send is gone, so firing the clock changes nothing.
+        state["working"] = True
+        async_fire_time_changed(
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+        )
+        await hass.async_block_till_done()
+
+    entries = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ]
+    assert entries[0]["action"] == "mode"
+    assert all(entry["result"] == "error" for entry in entries if entry["action"] != "mode")
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_pending_write_retries(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
+):
+    """Unloading the entry must not leave a re-send timer running."""
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        # A write that never lands: the read-back never matches.
+        patch.object(GoodweUdpClient, "write_register", return_value=None),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_windows",
+                {"windows": [{"start": "02:00", "stop": "05:00", "power": -80}]},
+                blocking=True,
+            )
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        assert coordinator._pending_writes
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert coordinator._pending_writes == {}
 
 
 @pytest.mark.asyncio

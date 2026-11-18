@@ -106,6 +106,7 @@ def make_entry(
     error: str | None = None,
     reason: str | None = None,
     attempts: int | None = None,
+    retry: int = 0,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Build one log entry.
@@ -119,6 +120,10 @@ def make_entry(
     confirmed it (``None`` for actions that do not write). A value above ``1``
     means the flaky dongle needed a re-send, which the log card shows as e.g.
     "3x mislukt" so the user can see the dongle being overloaded.
+
+    ``retry`` is the number of the delayed re-send round (``0`` for the first
+    attempt). A failed write is re-sent every minute until it sticks, and each
+    round is logged, so a value above ``0`` marks a re-send.
     """
     moment = now or dt.datetime.now(dt.UTC).astimezone()
     return {
@@ -128,6 +133,7 @@ def make_entry(
         "error": error,
         "reason": reason,
         "attempts": int(attempts) if attempts else None,
+        "retry": int(retry) if retry else 0,
         "changes": [dict(change) for change in (changes or [])],
         "windows": [dict(window) for window in (windows or [])],
     }
