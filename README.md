@@ -634,15 +634,6 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
-      - type: custom:goodwe-tou-power-card
-        title: GoodWe vermogen
-        grid_entity: sensor.meter_active_power_total
-        soc_entity: sensor.battery_state_of_charge
-        min_temp_entity: sensor.battery_min_cell_temperature
-        max_temp_entity: sensor.battery_max_cell_temperature
-        min_volt_entity: sensor.battery_min_cell_voltage
-        max_volt_entity: sensor.battery_max_cell_voltage
-
       - type: custom:goodwe-tou-card
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge
@@ -651,6 +642,41 @@ views:
       - type: custom:goodwe-tou-planner-card
         title: Laadplanning
         price_entity: sensor.average_electricity_price
+
+      # Live "energy display" - on a wide screen this lands top-right as the
+      # third card. See "The power card" above.
+      - type: custom:goodwe-tou-power-card
+        title: GoodWe vermogen
+        grid_entity: sensor.meter_active_power_total
+        invert_grid: false
+        soc_entity: sensor.battery_state_of_charge
+        min_temp_entity: sensor.battery_min_cell_temperature
+        max_temp_entity: sensor.battery_max_cell_temperature
+        min_volt_entity: sensor.battery_min_cell_voltage
+        max_volt_entity: sensor.battery_max_cell_voltage
+
+      # PV input, the same "Solar battery input from panels" gauge as on the
+      # start screen (HACS "modern-circular-gauge").
+      - type: custom:modern-circular-gauge
+        entity: sensor.pv_power
+        name: Solar battery input from panels
+        gauge_type: half
+        min: 0
+        max: 7500
+        needle: false
+        header_position: top
+        show_state: true
+        show_unit: true
+        secondary:
+          entity: sensor.pv1_power
+          min: 0
+          max: 2500
+          show_gauge: inner
+        tertiary:
+          entity: sensor.pv2_power
+          min: 0
+          max: 2500
+          show_gauge: inner
 
       # Manual charge / discharge. Only visible while the automation is paused
       # (Auto re-check off). They flip the direction of one window - window 4 by
