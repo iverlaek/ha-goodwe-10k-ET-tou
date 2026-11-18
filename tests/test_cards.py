@@ -96,3 +96,20 @@ def test_profile_card_reads_the_profile_service() -> None:
     assert "loadline" in text
     assert "importline" in text
     assert "exportline" in text
+    # Hovering shows the three values at the nearest quarter hour.
+    assert "mousemove" in text
+    assert "_updateHover" in text
+    assert "tooltip" in text
+
+
+def test_planner_card_has_price_graph_hover() -> None:
+    text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
+    # The price graph is drawn per quarter hour.
+    assert "pbar" in text
+    assert "_renderPrices" in text
+    # Hovering shows the price at the nearest quarter hour, with a crosshair.
+    assert "mousemove" in text
+    assert "mouseleave" in text
+    assert "_updatePriceHover" in text
+    assert "crosshair" in text
+    assert "tooltip" in text

@@ -347,7 +347,9 @@ run on it. On the timeline:
 - the **price graph** above the band shows the quarter-hour prices for the
   selected day as bars, with the price on the **left axis in whole cents**
   (5¢, 10¢, 15¢ … and −5¢ when prices go negative). The 0¢ line is drawn a bit
-  darker so you can see at a glance when the price is negative.
+  darker so you can see at a glance when the price is negative. **Hovering** the
+  graph draws a crosshair and a readout with the price — and whether the plan is
+  charging or discharging — at the nearest quarter hour.
 
 Only the **order on screen** changes; the windows keep the number they have in
 the inverter, and *Toepassen* writes every window back to its own number.
@@ -502,6 +504,9 @@ curves:
   This is the curve the planner uses to size the charge windows.
 - **Inkoop** (red) — what the house still buys from the grid (the meter drawing).
 - **Verkoop** (green) — what flows back to the grid (the meter feeding in).
+
+**Hovering** the graph shows the house load, import and export at the nearest
+quarter hour.
 
 Together they show the real daily "duck curve" of a home with solar: a quiet
 night, a morning peak, a midday dip while the panels cover the house, and an

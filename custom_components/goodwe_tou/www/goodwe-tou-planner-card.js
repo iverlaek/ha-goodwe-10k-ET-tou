@@ -31,6 +31,10 @@
  *     hours and fills the rows with the result, without writing anything;
  *   - "Toepassen" writes the whole plan through goodwe_tou.set_windows.
  *
+ * The price graph above the timeline plots the day's quarter-hour prices.
+ * Hovering it draws a crosshair and a readout with the price (and whether the
+ * plan is charging or discharging) at the nearest quarter hour.
+ *
  * Configure with:
  *
  *   type: custom:goodwe-tou-planner-card
@@ -40,7 +44,7 @@
  *   slot_minutes: 15                                     # optional, timeline granularity
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.7.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -85,6 +89,7 @@ const LANGS = {
     notActiveOn: (d) => `niet actief op ${d}`,
     greyGeneral: "Grijs = algemene modus (buiten de vensters)",
     nowPrefix: "Nu: ",
+    price: "Prijs",
     whyTimes: "Waarom deze tijden",
     windowPill: (n) => `Venster ${n}`,
     planPill: "Plan",
@@ -128,6 +133,7 @@ const LANGS = {
     notActiveOn: (d) => `not active on ${d}`,
     greyGeneral: "Grey = general mode (outside the windows)",
     nowPrefix: "Now: ",
+    price: "Price",
     whyTimes: "Why these times",
     windowPill: (n) => `Window ${n}`,
     planPill: "Plan",
@@ -221,6 +227,13 @@ const STYLES = `
   .prices .grid { position: absolute; left: 0; right: 0; height: 1px; background: var(--divider-color); opacity: .45; }
   .prices .grid.zero { opacity: .9; background: var(--secondary-text-color); }
   .pbar { position: absolute; bottom: 0; border-radius: 2px 2px 0 0; opacity: .85; }
+  .prices .crosshair { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--primary-text-color); opacity: 0; pointer-events: none; z-index: 2; }
+  .prices .crosshair.show { opacity: .5; }
+  .prices .hoverdot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--primary-color); border: 1.5px solid var(--card-background-color, #fff); opacity: 0; pointer-events: none; z-index: 3; }
+  .prices .hoverdot.show { opacity: 1; }
+  .prices .tooltip { position: absolute; pointer-events: none; transform: translate(-50%, -115%); background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color); border-radius: 6px; padding: 3px 7px; font-size: .74rem; font-variant-numeric: tabular-nums; white-space: pre; text-align: left; box-shadow: 0 1px 4px rgba(0, 0, 0, .3); opacity: 0; transition: opacity .08s linear; z-index: 4; }
+  .prices .tooltip.show { opacity: 1; }
+  .prices .tooltip.below { transform: translate(-50%, 10px); }
   ha-card.with-axis .ruler,
   ha-card.with-axis .band,
   ha-card.with-axis .wtrack { margin-left: 38px; }
@@ -304,6 +317,9 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._segs = [];
     this._rows = [];
     this._priceSlots = [];
+    this._priceGeom = null;
+    this._priceHoverPos = null;
+    this._priceUnit = "";
     this._slot = 15;
     this._now = new Date();
     this._todayIdx = weekdayIndex(this._now);
@@ -454,6 +470,7 @@ class GoodweTouPlannerCard extends HTMLElement {
         <div class="prices" id="prices">
           <div class="yaxis" id="yaxis"></div>
           <div class="plot" id="priceplot"></div>
+          <div class="tooltip" id="ptip"></div>
         </div>
         <div class="band" id="band"></div>
         <div class="bandcap" id="bandcap"></div>
@@ -476,6 +493,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._pricesEl = root.querySelector("#prices");
     this._axisEl = root.querySelector("#yaxis");
     this._plotEl = root.querySelector("#priceplot");
+    this._tipEl = root.querySelector("#ptip");
     this._cardEl = root.querySelector("ha-card");
     this._bandEl = root.querySelector("#band");
     this._bandcapEl = root.querySelector("#bandcap");
@@ -525,6 +543,16 @@ class GoodweTouPlannerCard extends HTMLElement {
     root.querySelector("#read").addEventListener("click", () => this._read());
     root.querySelector("#calc").addEventListener("click", () => this._calc());
     root.querySelector("#apply").addEventListener("click", () => this._apply());
+
+    // Hover: read the price under the pointer on the price graph.
+    this._plotEl.addEventListener("mousemove", (event) => this._onPriceMove(event));
+    this._plotEl.addEventListener("mouseleave", () => this._onPriceLeave());
+    this._plotEl.addEventListener(
+      "touchmove",
+      (event) => this._onPriceMove(event.touches && event.touches[0]),
+      { passive: true }
+    );
+    this._plotEl.addEventListener("touchend", () => this._onPriceLeave());
 
     this._built = true;
   }
@@ -777,12 +805,18 @@ class GoodweTouPlannerCard extends HTMLElement {
     if (!visible.length) {
       host.style.display = "none";
       if (this._cardEl) this._cardEl.classList.remove("with-axis");
+      this._clearPriceHover();
       return;
     }
     host.style.display = "grid";
     if (this._cardEl) this._cardEl.classList.add("with-axis");
     plot.innerHTML = "";
     axis.innerHTML = "";
+
+    const priceState = this._priceEntity ? this._state(this._priceEntity) : undefined;
+    this._priceUnit =
+      (priceState && priceState.attributes && priceState.attributes.unit_of_measurement) ||
+      "";
 
     // Absolute scale in euros, anchored on 0 so the left axis reads in whole
     // cents (5, 10, 15, ... and -5 when prices go negative).
@@ -826,6 +860,110 @@ class GoodweTouPlannerCard extends HTMLElement {
       bar.title = `${hm(slot.t)} \u00b7 ${slot.price.toFixed(3)}`;
       plot.appendChild(bar);
     }
+
+    // Crosshair + dot for the hover readout, drawn on top of the bars.
+    this._crossEl = document.createElement("div");
+    this._crossEl.className = "crosshair";
+    plot.appendChild(this._crossEl);
+    this._dotEl = document.createElement("div");
+    this._dotEl.className = "hoverdot";
+    plot.appendChild(this._dotEl);
+
+    this._priceGeom = { visible, axisLow, axisHigh, range };
+    if (this._priceHoverPos) this._updatePriceHover();
+    else this._hidePriceHover();
+  }
+
+  // -- hover -------------------------------------------------------------
+
+  _onPriceMove(event) {
+    if (!event) return;
+    this._priceHoverPos = { clientX: event.clientX };
+    this._updatePriceHover();
+  }
+
+  _onPriceLeave() {
+    this._priceHoverPos = null;
+    this._hidePriceHover();
+  }
+
+  _clearPriceHover() {
+    this._priceGeom = null;
+    this._crossEl = null;
+    this._dotEl = null;
+    this._hidePriceHover();
+  }
+
+  _hidePriceHover() {
+    if (this._crossEl) this._crossEl.classList.remove("show");
+    if (this._dotEl) this._dotEl.classList.remove("show");
+    if (this._tipEl) this._tipEl.classList.remove("show");
+  }
+
+  // What the inverter is doing at a given minute on the selected day, or "" in
+  // its general mode.
+  _modeAtMinutes(minutes) {
+    for (const i of this._activeDayIndices()) {
+      const seg = this._segs[i];
+      if (minutesOf(seg.startHM) <= minutes && minutes < minutesOf(seg.stopHM)) {
+        return seg.mode === "charge" ? this._t("charge") : this._t("discharge");
+      }
+    }
+    return "";
+  }
+
+  // Snap the pointer to the nearest price slot and show its price.
+  _updatePriceHover() {
+    const geom = this._priceGeom;
+    const plot = this._plotEl;
+    const tip = this._tipEl;
+    const pos = this._priceHoverPos;
+    if (!geom || !plot || !tip || !pos || !geom.visible.length) return;
+    const rect = plot.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const box = this._pricesEl.getBoundingClientRect();
+
+    const ratio = clamp((pos.clientX - rect.left) / rect.width, 0, 1);
+    const minutes = ratio * DAY_MINUTES;
+    let best = geom.visible[0];
+    let bestDist = Infinity;
+    for (const slot of geom.visible) {
+      const slotMinutes = slot.t.getHours() * 60 + slot.t.getMinutes();
+      const dist = Math.abs(slotMinutes - minutes);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = slot;
+      }
+    }
+
+    const m = best.t.getHours() * 60 + best.t.getMinutes();
+    const xRatio = m / DAY_MINUTES;
+    const yRatio =
+      geom.range > 0 ? clamp((best.price - geom.axisLow) / geom.range, 0, 1) : 0.5;
+
+    if (this._crossEl) {
+      this._crossEl.style.left = `${xRatio * 100}%`;
+      this._crossEl.classList.add("show");
+    }
+    if (this._dotEl) {
+      this._dotEl.style.left = `${xRatio * 100}%`;
+      this._dotEl.style.top = `${(1 - yRatio) * 100}%`;
+      this._dotEl.classList.add("show");
+    }
+
+    const mode = this._modeAtMinutes(m);
+    const unit = this._priceUnit ? ` ${this._priceUnit}` : "";
+    tip.textContent =
+      `${pad(best.t.getHours())}:${pad(best.t.getMinutes())}\n` +
+      `${this._t("price")}  ${best.price.toFixed(3)}${unit}` +
+      (mode ? `\n${mode}` : "");
+
+    const cx = rect.left - box.left + xRatio * rect.width;
+    const cy = rect.top - box.top + (1 - yRatio) * rect.height;
+    tip.style.left = `${clamp(cx, 84, Math.max(84, box.width - 84))}px`;
+    tip.style.top = `${cy}px`;
+    tip.classList.toggle("below", cy < 60);
+    tip.classList.add("show");
   }
 
   _nowModeText() {

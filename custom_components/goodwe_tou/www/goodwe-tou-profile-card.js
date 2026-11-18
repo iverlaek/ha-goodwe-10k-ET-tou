@@ -12,7 +12,8 @@
  * local day over the last days. It is fetched through the
  * `goodwe_tou.get_profile` service, so the card shows all 96 × 3 values even
  * though they would not fit in a state attribute. It refreshes whenever the
- * profile sensor changes.
+ * profile sensor changes. Hovering the graph reads the house load, import and
+ * export at the nearest quarter hour.
  *
  * Ships with the integration and is loaded automatically. Configure with:
  *
@@ -23,7 +24,7 @@
  *   language: en                                # optional, overrides the language
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.7.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 
 // Everything the card says, per language. A value may be a function when it
@@ -89,6 +90,16 @@ const resolveLangCode = (value) => {
 };
 
 const pad = (value) => String(value).padStart(2, "0");
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svgEl = (tag, attrs) => {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (key === "class") el.setAttribute("class", String(value));
+    else el.setAttribute(key, String(value));
+  }
+  return el;
+};
 
 const formatTime = (iso) => {
   const date = new Date(iso);
@@ -121,14 +132,36 @@ const STYLES = `
   .legend .item { display: inline-flex; align-items: center; gap: 6px; }
   .legend .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 
-  .chartwrap { border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 6px 2px; }
-  svg { width: 100%; height: auto; display: block; }
+  .chartwrap { position: relative; border: 1px solid var(--divider-color); border-radius: 8px; padding: 8px 6px 2px; }
+  svg { width: 100%; height: auto; display: block; cursor: crosshair; }
   .gridline { stroke: var(--divider-color); stroke-width: 1; }
   .axislabel { fill: var(--secondary-text-color); font-size: 10px; }
   .loadfill { fill: rgba(33, 150, 243, .14); }
   .loadline { fill: none; stroke: #2196f3; stroke-width: 2; }
   .importline { fill: none; stroke: #e53935; stroke-width: 2; }
   .exportline { fill: none; stroke: #43a047; stroke-width: 2; }
+  .crosshair { stroke: var(--primary-text-color); stroke-width: 1; opacity: .5; }
+  .hoverdot { stroke: var(--card-background-color, #fff); stroke-width: 1.5; }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    transform: translate(-50%, -115%);
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    border: 1px solid var(--divider-color);
+    border-radius: 6px;
+    padding: 3px 7px;
+    font-size: .74rem;
+    font-variant-numeric: tabular-nums;
+    white-space: pre;
+    text-align: left;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+    opacity: 0;
+    transition: opacity .08s linear;
+    z-index: 2;
+  }
+  .tooltip.show { opacity: 1; }
+  .tooltip.below { transform: translate(-50%, 10px); }
 
   .empty { padding: 14px 4px; color: var(--secondary-text-color); font-size: .86rem; }
   .note { margin-top: 8px; font-size: .74rem; color: var(--secondary-text-color); }
@@ -143,6 +176,11 @@ class GoodweTouProfileCard extends HTMLElement {
     this._error = "";
     this._lang = "nl";
     this._langOverride = null;
+    this._hoverPos = null;
+    this._geom = null;
+    this._hoverSvg = null;
+    this._hoverGroup = null;
+    this._tipEl = null;
   }
 
   setConfig(config) {
@@ -234,6 +272,16 @@ class GoodweTouProfileCard extends HTMLElement {
     this._chartEl = root.querySelector("#chartwrap");
     this._noteEl = root.querySelector("#note");
 
+    // Hover: read the quarter-hour values under the pointer.
+    this._chartEl.addEventListener("mousemove", (event) => this._onMove(event));
+    this._chartEl.addEventListener("mouseleave", () => this._onLeave());
+    this._chartEl.addEventListener(
+      "touchmove",
+      (event) => this._onMove(event.touches && event.touches[0]),
+      { passive: true }
+    );
+    this._chartEl.addEventListener("touchend", () => this._onLeave());
+
     this._built = true;
     this._render();
   }
@@ -310,6 +358,7 @@ class GoodweTouProfileCard extends HTMLElement {
 
     if (!enabled) {
       this._countEl.textContent = "";
+      this._clearHoverState();
       this._chartEl.innerHTML = `<div class="empty">${this._t("disabled")}</div>`;
       this._noteEl.textContent = "";
       return;
@@ -321,6 +370,7 @@ class GoodweTouProfileCard extends HTMLElement {
 
     if (!load.length && !imports.length && !exports.length) {
       this._countEl.textContent = "";
+      this._clearHoverState();
       this._chartEl.innerHTML = `<div class="empty">${
         this._error || this._t("empty")
       }</div>`;
@@ -487,8 +537,106 @@ class GoodweTouProfileCard extends HTMLElement {
             : ""
         }
         ${loadPts ? `<polyline class="loadline" points="${loadPts}" />` : ""}
+        <g id="hover"></g>
       </svg>
+      <div class="tooltip" id="tip"></div>
     `;
+
+    // Remember the geometry so the hover handler can map the pointer back to a
+    // quarter hour and read all three series at that moment.
+    const n = Math.max(load.length, imports.length, exports.length);
+    const svg = this._chartEl.querySelector("svg");
+    this._hoverSvg = svg;
+    this._hoverGroup = svg ? svg.querySelector("#hover") : null;
+    this._tipEl = this._chartEl.querySelector("#tip");
+    this._geom = { W, H, x0, y0, w, h, yMax, n, load, imports, exports };
+    if (this._hoverPos) this._updateHover();
+    else this._hideHover();
+  }
+
+  // -- hover -------------------------------------------------------------
+
+  _onMove(event) {
+    if (!event) return;
+    this._hoverPos = { clientX: event.clientX, clientY: event.clientY };
+    this._updateHover();
+  }
+
+  _onLeave() {
+    this._hoverPos = null;
+    this._hideHover();
+  }
+
+  _clearHoverState() {
+    this._geom = null;
+    this._hoverSvg = null;
+    this._hoverGroup = null;
+    this._tipEl = null;
+  }
+
+  _hideHover() {
+    if (this._hoverGroup) this._hoverGroup.replaceChildren();
+    if (this._tipEl) this._tipEl.classList.remove("show");
+  }
+
+  // Snap the pointer to the nearest quarter hour and show all three values.
+  _updateHover() {
+    const geom = this._geom;
+    const svg = this._hoverSvg;
+    const tip = this._tipEl;
+    if (!geom || !svg || !tip || !this._hoverPos) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const box = this._chartEl.getBoundingClientRect();
+
+    const vx = ((this._hoverPos.clientX - rect.left) / rect.width) * geom.W;
+    const stepX = geom.w / Math.max(1, geom.n - 1);
+    const idx = clamp(Math.round((vx - geom.x0) / stepX), 0, geom.n - 1);
+    const px = geom.x0 + idx * stepX;
+
+    const loadV = geom.load[idx] ?? 0;
+    const importV = geom.imports[idx] ?? 0;
+    const exportV = geom.exports[idx] ?? 0;
+    const yOf = (value) => geom.y0 + geom.h - (value / geom.yMax) * geom.h;
+    const pyLoad = yOf(loadV);
+
+    const group = this._hoverGroup;
+    if (group) {
+      group.replaceChildren();
+      group.appendChild(
+        svgEl("line", {
+          x1: px,
+          y1: geom.y0,
+          x2: px,
+          y2: geom.y0 + geom.h,
+          class: "crosshair",
+        })
+      );
+      for (const [value, color] of [
+        [loadV, "#2196f3"],
+        [importV, "#e53935"],
+        [exportV, "#43a047"],
+      ]) {
+        group.appendChild(
+          svgEl("circle", { cx: px, cy: yOf(value), r: 3.5, fill: color, class: "hoverdot" })
+        );
+      }
+    }
+
+    const minutes = idx * 15;
+    const time = `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`;
+    tip.textContent =
+      `${time}\n` +
+      `${this._t("load")}  ${this._num(loadV)} ${this._t("kw")}\n` +
+      `${this._t("import")}  ${this._num(importV)} ${this._t("kw")}\n` +
+      `${this._t("export")}  ${this._num(exportV)} ${this._t("kw")}`;
+
+    const cx = (px / geom.W) * rect.width + (rect.left - box.left);
+    const cy = (pyLoad / geom.H) * rect.height + (rect.top - box.top);
+    tip.style.left = `${clamp(cx, 72, Math.max(72, box.width - 72))}px`;
+    tip.style.top = `${cy}px`;
+    tip.classList.toggle("below", cy < 70);
+    tip.classList.add("show");
   }
 
   static getStubConfig() {
