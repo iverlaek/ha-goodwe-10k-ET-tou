@@ -78,6 +78,14 @@ automate them from scripts, automations and dashboards.
   entries), is exposed as the `sensor.goodwe_time_of_use_activity_log` sensor and
   through the `goodwe_tou.get_activity` service, and is shown by the bundled
   **log card** (`custom:goodwe-tou-log-card`).
+- **Automatic re-send for the flaky Wi-Fi dongle.** The older GoodWe Wi-Fi
+  dongle (not the LAN/Wi-Fi v2.0 module) is easily overloaded and sometimes does
+  not confirm a write. Instead of leaving the programming wrong, the integration
+  sends the whole change again (up to 3 times, with a short pause between
+  attempts) and only gives up when every send failed. A **retry counter**
+  (`sensor.goodwe_time_of_use_herpogingen`) tracks how often a re-send was needed,
+  and the log shows it: `gelukt (2x)` when it took two sends, `3x mislukt` when
+  all three failed.
 - **Deviation tracking with an adaptive house load.** The planner's assumed
   house load is compared with what the house really used, hour by hour, and
   adjusted for the weather: a cold day (the air conditioner working harder) or a
@@ -187,6 +195,7 @@ With the default device name the entities are:
 | `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
 | `sensor.goodwe_time_of_use_plan` | Last computed plan: number of windows, with `reasons` (per window) and `notes` as attributes |
 | `sensor.goodwe_time_of_use_afwijking` | Deviation log: number of hourly samples, with the learned model, the current assumed load, today's totals and the newest samples as attributes |
+| `sensor.goodwe_time_of_use_herpogingen` | Retry counter: how often a write had to be re-sent today (`total` = all-time, `last_attempts` / `last_time` = most recent retried write) |
 | `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
@@ -424,6 +433,13 @@ prefix: goodwe_time_of_use                        # optional entity-id prefix
 sensor: sensor.goodwe_time_of_use_activity_log    # optional, refresh trigger
 limit: 200                                        # optional, entries fetched
 ```
+
+When a write needed a **re-send** (the flaky Wi-Fi dongle did not confirm it the
+first time) the badge shows how many attempts it took: `gelukt (2x)` on success,
+`3x mislukt` when every attempt failed. While the dongle needed a re-send **today**
+the card also shows a small orange note — *Herpogingen vandaag: 3 (totaal 12)* —
+fed by the `retry` counter on the activity sensor. A healthy dongle leaves the
+counter at 0 and the note stays hidden.
 
 ## The deviation card
 
@@ -936,6 +952,28 @@ views:
               return entity.attributes.prices.map((record) => {
                 return [new Date(record.time).getTime(), record.price];
               });
+
+      # Retry counter: only visible while the flaky Wi-Fi dongle needed a
+      # re-send today. A healthy dongle keeps the sensor at 0, hiding the card.
+      - type: conditional
+        conditions:
+          - entity: sensor.goodwe_time_of_use_herpogingen
+            state_not: "0"
+        card:
+          type: entities
+          title: Herpogingen
+          show_header_toggle: false
+          entities:
+            - entity: sensor.goodwe_time_of_use_herpogingen
+              name: Herpogingen vandaag
+            - type: attribute
+              entity: sensor.goodwe_time_of_use_herpogingen
+              attribute: total
+              name: Totaal
+            - type: attribute
+              entity: sensor.goodwe_time_of_use_herpogingen
+              attribute: last_time
+              name: Laatste herpoging
 
       - type: custom:goodwe-tou-log-card
         title: Logboek

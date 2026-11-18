@@ -33,8 +33,17 @@ def test_make_entry_shape():
     assert entry["action"] == "window_power"
     assert entry["result"] == "ok"
     assert entry["error"] is None
+    assert entry["attempts"] is None
     assert entry["changes"] == [{"field": "window_1_power", "old": 0, "new": -100}]
     assert entry["windows"] == []
+
+
+def test_make_entry_records_the_attempt_count():
+    """A write that needed a re-send carries how many sends it took."""
+    entry = activity.make_entry("apply", attempts=3, result="error", error="nope")
+    assert entry["attempts"] == 3
+    # No attempt count (a non-write action) stays None, not 0.
+    assert activity.make_entry("eco")["attempts"] is None
 
 
 def test_make_entry_marks_errors():

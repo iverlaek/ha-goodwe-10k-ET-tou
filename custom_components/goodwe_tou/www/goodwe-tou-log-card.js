@@ -21,7 +21,7 @@
  *   language: en                              # optional, overrides the language
  */
 
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 
@@ -43,8 +43,10 @@ const LANGS = {
     emptyNone: "Nog geen wijzigingen naar de omvormer gestuurd.",
     note: (limit) => `Nieuwste ${limit} wijzigingen uit het logboek van de integratie.`,
     changeFallback: "Wijziging",
-    badgeOk: "gelukt",
-    badgeError: "mislukt",
+    badgeOk: (n) => (n > 1 ? `gelukt (${n}x)` : "gelukt"),
+    badgeError: (n) => (n > 1 ? `${n}x mislukt` : "mislukt"),
+    retriesNote: (today, total) =>
+      `Herpogingen vandaag: ${today} (totaal ${total})`,
     allWindowsOff: "Alle vensters uit",
     loadFailed: "Kon het logboek niet laden",
     haUnavailable: "Home Assistant is niet beschikbaar",
@@ -97,8 +99,10 @@ const LANGS = {
     emptyNone: "No changes sent to the inverter yet.",
     note: (limit) => `Newest ${limit} changes from the integration's log.`,
     changeFallback: "Change",
-    badgeOk: "succeeded",
-    badgeError: "failed",
+    badgeOk: (n) => (n > 1 ? `succeeded (${n}x)` : "succeeded"),
+    badgeError: (n) => (n > 1 ? `${n}x failed` : "failed"),
+    retriesNote: (today, total) =>
+      `Retries today: ${today} (total ${total})`,
     allWindowsOff: "All windows off",
     loadFailed: "Could not load the log",
     haUnavailable: "Home Assistant is not available",
@@ -208,6 +212,8 @@ const STYLES = `
   .error-text { margin-top: 4px; font-size: .76rem; color: var(--error-color, #d32f2f); }
   .empty { font-size: .82rem; color: var(--secondary-text-color); padding: 10px 0; }
   .note { font-size: .74rem; color: var(--secondary-text-color); margin-top: 6px; }
+  .retry { display: none; margin-bottom: 10px; font-size: .78rem; color: #b26a00; background: rgba(255,152,0,.14); border: 1px solid rgba(255,152,0,.35); border-radius: 8px; padding: 6px 9px; }
+  .retry.on { display: block; }
 `;
 
 class GoodweTouLogCard extends HTMLElement {
@@ -346,6 +352,7 @@ class GoodweTouLogCard extends HTMLElement {
             <span class="seg" id="windowseg"></span>
           </div>
         </div>
+        <div class="retry" id="retry"></div>
         <div class="list" id="list"></div>
         <div class="note" id="note"></div>
       </ha-card>
@@ -356,6 +363,7 @@ class GoodweTouLogCard extends HTMLElement {
     this._countEl = root.querySelector("#count");
     this._listEl = root.querySelector("#list");
     this._noteEl = root.querySelector("#note");
+    this._retryEl = root.querySelector("#retry");
 
     const resultSeg = root.querySelector("#resultseg");
     this._resultBtns = [];
@@ -482,6 +490,15 @@ class GoodweTouLogCard extends HTMLElement {
     if (this._noteEl) {
       this._noteEl.textContent = this._error ? "" : this._t("note", this._limit);
     }
+
+    if (this._retryEl) {
+      const state = this._hass ? this._hass.states[this._sensor] : undefined;
+      const retries = (state && state.attributes && state.attributes.retries) || {};
+      const today = Number(retries.today) || 0;
+      const total = Number(retries.total) || 0;
+      this._retryEl.classList.toggle("on", today > 0);
+      this._retryEl.textContent = today > 0 ? this._t("retriesNote", today, total) : "";
+    }
   }
 
   _renderEntry(entry) {
@@ -505,7 +522,9 @@ class GoodweTouLogCard extends HTMLElement {
     const badge = document.createElement("span");
     badge.className = `ebadge ${entry.result === "error" ? "error" : "ok"}`;
     badge.textContent =
-      entry.result === "error" ? this._t("badgeError") : this._t("badgeOk");
+      entry.result === "error"
+        ? this._t("badgeError", entry.attempts)
+        : this._t("badgeOk", entry.attempts);
     head.appendChild(badge);
 
     row.appendChild(head);

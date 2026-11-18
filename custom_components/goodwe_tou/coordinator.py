@@ -135,6 +135,10 @@ _FIRST_BASE = base_for(1)
 _REGISTER_COUNT = 4 * len(WINDOWS)
 _APPLY_ATTEMPTS = 3
 _READ_ATTEMPTS = 3
+#: Seconds to wait before re-sending a write the inverter did not confirm. The
+#: older GoodWe Wi-Fi dongle is easily overloaded, so hammering it back-to-back
+#: only makes things worse; a short pause lets it recover.
+_RETRY_DELAY = 2.0
 
 
 def window_to_dict(window: TouWindow) -> dict[str, Any]:
@@ -236,7 +240,21 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan": None,
             "deviation": [],
             "learned": None,
+            "retries": {"total": 0, "today": 0, "last_attempts": None, "last_time": None},
         }
+        #: How often a write had to be re-sent because the flaky dongle did not
+        #: confirm it (see :meth:`retry_summary`). Persisted so the tally survives
+        #: a restart; ``today`` is reset when the calendar day changes.
+        self._retries: dict[str, Any] = {
+            "total": 0,
+            "today": 0,
+            "date": None,
+            "last_attempts": None,
+            "last_time": None,
+        }
+        self._retries_store: Store = Store(
+            hass, 1, f"{DOMAIN}_retries_{entry.entry_id}"
+        )
         self._activity: list[dict[str, Any]] = []
         self._activity_store: Store = Store(
             hass, 1, f"{DOMAIN}_activity_{entry.entry_id}"
@@ -305,6 +323,50 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._plan = stored
         self._publish(self.data)
 
+    async def async_load_retries(self) -> None:
+        """Load the persisted retry counter (if any) into memory."""
+        try:
+            stored = await self._retries_store.async_load()
+        except Exception:  # pragma: no cover - corrupt/unreadable store
+            _LOGGER.warning("Could not load the retry counter", exc_info=True)
+            return
+        if isinstance(stored, dict):
+            for key in self._retries:
+                if key in stored:
+                    self._retries[key] = stored[key]
+        self._publish(self.data)
+
+    def retry_summary(self) -> dict[str, Any]:
+        """How often a write had to be re-sent, plus the last retried write.
+
+        ``total`` is the running tally since installation, ``today`` the part of
+        it that happened today (reset at midnight), and ``last_attempts`` /
+        ``last_time`` describe the most recent write that needed a re-send. The
+        retry sensor and the log card show this only while it is non-zero, so a
+        healthy dongle stays quiet.
+        """
+        summary = dict(self._retries)
+        today = dt.datetime.now(dt.UTC).astimezone().date().isoformat()
+        if summary.get("date") != today:
+            summary["today"] = 0
+        return summary
+
+    def _count_retries(self, attempts: int | None) -> None:
+        """Add a write's extra attempts to the retry tally and persist it."""
+        if not attempts or attempts < 2:
+            return
+        extra = attempts - 1
+        now = dt.datetime.now(dt.UTC).astimezone()
+        today = now.date().isoformat()
+        if self._retries.get("date") != today:
+            self._retries["date"] = today
+            self._retries["today"] = 0
+        self._retries["total"] = int(self._retries.get("total") or 0) + extra
+        self._retries["today"] = int(self._retries.get("today") or 0) + extra
+        self._retries["last_attempts"] = attempts
+        self._retries["last_time"] = now.isoformat(timespec="seconds")
+        self._retries_store.async_delay_save(lambda: dict(self._retries), 2.0)
+
     def _schedule_save(self) -> None:
         self._activity_store.async_delay_save(lambda: list(self._activity), 2.0)
 
@@ -317,6 +379,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         result: str = "ok",
         error: str | None = None,
         reason: str | None = None,
+        attempts: int | None = None,
     ) -> None:
         """Append one entry to the log and persist it."""
         self._activity.insert(
@@ -328,6 +391,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 result=result,
                 error=error,
                 reason=reason,
+                attempts=attempts,
             ),
         )
         trim(self._activity, self._log_size())
@@ -601,6 +665,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["plan"] = self._plan
         data["deviation"] = list(self._deviation)
         data["learned"] = self._learned
+        data["retries"] = self.retry_summary()
         self.async_set_updated_data(data)
 
     # -- device access -----------------------------------------------------
@@ -687,6 +752,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["plan"] = self._plan
         data["deviation"] = list(self._deviation)
         data["learned"] = self._learned
+        data["retries"] = self.retry_summary()
         return data
 
     async def _write(self, mapping: Mapping[int, int]) -> None:
@@ -728,38 +794,56 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             EXPORT_LIMIT_REGISTER: self._export_limit(overrides),
         }
 
-    async def _write_verified(self, mapping: Mapping[int, int]) -> None:
+    async def _write_verified(self, mapping: Mapping[int, int]) -> int:
         """Write registers, then read the schedule back and confirm them.
 
         The dongle is flaky and shared, so a write is only believed once the
         inverter reads the intended value back. This is what makes a single
         entity change *stick* instead of silently reverting on the next poll.
+
+        The older GoodWe Wi-Fi dongle (not the LAN/Wi-Fi v2.0 module) is easily
+        overloaded, so a transient error — or a read-back that does not match — is
+        not fatal: the whole mapping is sent again after a short pause, up to
+        :data:`_APPLY_ATTEMPTS` times. Returns how many sends were needed (``1``
+        when it stuck immediately); the caller logs that as the retry count.
         """
         last: dict[str, Any] | None = None
+        last_error: Exception | None = None
         for attempt in range(1, _APPLY_ATTEMPTS + 1):
-            await self._write(mapping)
+            if attempt > 1:
+                await asyncio.sleep(_RETRY_DELAY)
             try:
+                await self._write(mapping)
                 last = await self._call(self._read_all)
-            except GoodweError as err:
-                raise HomeAssistantError(
-                    self._t("error.verify", error=err)
-                ) from err
+            except (HomeAssistantError, GoodweError) as err:
+                # A dongle that is busy drops requests entirely; send it again.
+                last_error = err
+                _LOGGER.warning(
+                    "Write attempt %s/%s failed (%s), re-sending",
+                    attempt,
+                    _APPLY_ATTEMPTS,
+                    err,
+                )
+                continue
             actual = self._registers_for(last["windows"])
             actual[WORK_MODE_REGISTER] = last["work_mode"]
             actual[EXPORT_ENABLE_REGISTER] = last["export_enabled"]
             actual[EXPORT_LIMIT_REGISTER] = last["export_limit"]
             if all(actual.get(register) == value for register, value in mapping.items()):
                 self._publish(last)
-                return
+                return attempt
+            last_error = None
             _LOGGER.warning(
-                "Write verification attempt %s/%s did not match, retrying",
+                "Write verification attempt %s/%s did not match, re-sending",
                 attempt,
                 _APPLY_ATTEMPTS,
             )
 
         if last is not None:
             self._publish(last)
-        raise HomeAssistantError(self._t("error.readback", attempts=_APPLY_ATTEMPTS))
+        error = HomeAssistantError(self._t("error.readback", attempts=_APPLY_ATTEMPTS))
+        error.attempts = _APPLY_ATTEMPTS  # type: ignore[attr-defined]
+        raise error from last_error
 
     # -- public operations -------------------------------------------------
 
@@ -776,16 +860,23 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _logged(
         self,
         action: str,
-        operation: Awaitable[None],
+        operation: Awaitable[int],
         *,
         changes: Sequence[Mapping[str, Any]] | None = None,
         windows: Sequence[Mapping[str, Any]] | None = None,
         reason: str | None = None,
     ) -> None:
-        """Run a write operation and record it in the activity log."""
+        """Run a write operation and record it in the activity log.
+
+        ``operation`` resolves to the number of sends the write needed, which is
+        recorded on the entry (so the log can say "3x mislukt") and added to the
+        retry counter.
+        """
         try:
-            await operation
+            attempts = await operation
         except HomeAssistantError as err:
+            attempts = getattr(err, "attempts", None)
+            self._count_retries(attempts)
             self._record(
                 action,
                 changes=changes,
@@ -793,9 +884,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 result="error",
                 error=str(err),
                 reason=reason,
+                attempts=attempts,
             )
             raise
-        self._record(action, changes=changes, windows=windows, reason=reason)
+        self._count_retries(attempts)
+        self._record(
+            action,
+            changes=changes,
+            windows=windows,
+            reason=reason,
+            attempts=attempts,
+        )
 
     async def async_apply(self) -> None:
         """Write every window to the inverter and verify the result."""
@@ -1289,9 +1388,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         changes = window_changes(dict(self.data["windows"]), after)
         targets = [window_summary(number, after[number]) for number in WINDOWS]
 
-        self.data["windows"].update(after)
-        self._publish(self.data)
-
+        # The windows are *not* updated optimistically: the coordinator's state is
+        # only trusted once the inverter reads the new values back. If every send
+        # fails, the state keeps the inverter's real (old) schedule, so the next
+        # quarter-hour re-check sees the difference and sends the plan again.
         mapping = self._registers_for(after)
         mapping.update(self._export_registers(overrides))
         await self._logged(

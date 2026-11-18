@@ -205,6 +205,30 @@ views:
                 return [new Date(record.time).getTime(), record.price];
               });
 
+      # Retry counter: the older GoodWe Wi-Fi dongle is easily overloaded and
+      # sometimes does not confirm a write, so the integration re-sends it. This
+      # card is only visible while the dongle needed a re-send today; a healthy
+      # dongle keeps the sensor at 0, which hides the card entirely.
+      - type: conditional
+        conditions:
+          - entity: sensor.goodwe_time_of_use_herpogingen
+            state_not: "0"
+        card:
+          type: entities
+          title: Herpogingen
+          show_header_toggle: false
+          entities:
+            - entity: sensor.goodwe_time_of_use_herpogingen
+              name: Herpogingen vandaag
+            - type: attribute
+              entity: sensor.goodwe_time_of_use_herpogingen
+              attribute: total
+              name: Totaal
+            - type: attribute
+              entity: sensor.goodwe_time_of_use_herpogingen
+              attribute: last_time
+              name: Laatste herpoging
+
       - type: custom:goodwe-tou-log-card
         title: Logboek
 

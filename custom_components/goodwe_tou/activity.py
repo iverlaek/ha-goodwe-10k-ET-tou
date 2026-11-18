@@ -105,6 +105,7 @@ def make_entry(
     result: str = "ok",
     error: str | None = None,
     reason: str | None = None,
+    attempts: int | None = None,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Build one log entry.
@@ -113,6 +114,11 @@ def make_entry(
     ``windows`` holds the full set of windows that was written, which is useful
     when nothing changed (for example a manual *Apply*). ``reason`` explains a
     change the integration decided on itself (the quarter-hour re-check).
+
+    ``attempts`` is how many times the write had to be sent before the inverter
+    confirmed it (``None`` for actions that do not write). A value above ``1``
+    means the flaky dongle needed a re-send, which the log card shows as e.g.
+    "3x mislukt" so the user can see the dongle being overloaded.
     """
     moment = now or dt.datetime.now(dt.UTC).astimezone()
     return {
@@ -121,6 +127,7 @@ def make_entry(
         "result": "error" if result == "error" else "ok",
         "error": error,
         "reason": reason,
+        "attempts": int(attempts) if attempts else None,
         "changes": [dict(change) for change in (changes or [])],
         "windows": [dict(window) for window in (windows or [])],
     }

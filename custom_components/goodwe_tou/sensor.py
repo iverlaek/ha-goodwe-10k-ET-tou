@@ -41,6 +41,7 @@ async def async_setup_entry(
         TouCellVoltageSensor(coordinator),
         TouPlanSensor(coordinator),
         TouDeviationSensor(coordinator),
+        TouRetrySensor(coordinator),
     ]
     if coordinator.price_coordinator is not None and coordinator.config_entry.options.get(
         CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES
@@ -84,6 +85,9 @@ class TouActivitySensor(GoodweTouEntity, SensorEntity):
             "last_time": latest.get("time") if latest else None,
             "last_action": latest.get("action") if latest else None,
             "last_result": latest.get("result") if latest else None,
+            # How often a write had to be re-sent (the flaky dongle); the log
+            # card shows this only while it is non-zero.
+            "retries": self.coordinator.retry_summary(),
             # The cards read the language from here when they have no override.
             "language": self.coordinator.language,
         }
@@ -193,6 +197,43 @@ class TouDeviationSensor(GoodweTouEntity, SensorEntity):
             "learned": self.coordinator.data.get("learned"),
             "effective_kw": round(self.coordinator.effective_standby_kw(), 2),
             "today": self.coordinator.deviation_summary(),
+            # The cards read the language from here when they have no override.
+            "language": self.coordinator.language,
+        }
+
+
+class TouRetrySensor(GoodweTouEntity, SensorEntity):
+    """How often a write had to be re-sent because the dongle dropped it.
+
+    The older GoodWe Wi-Fi dongle (not the LAN/Wi-Fi v2.0 module) is easily
+    overloaded and sometimes does not confirm a write, so the integration sends
+    it again. The state is how many re-sends were needed today; ``total`` is the
+    running tally since installation and ``last_attempts`` / ``last_time``
+    describe the most recent retried write. A healthy dongle leaves this at 0,
+    which is what the dashboard's conditional card keys on.
+    """
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "retries",
+            coordinator._t("entity.retries"),
+            "mdi:backup-restore",
+            domain="sensor",
+            object_id="herpogingen",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return int(self.coordinator.retry_summary().get("today") or 0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        summary = self.coordinator.retry_summary()
+        return {
+            "total": summary.get("total", 0),
+            "last_attempts": summary.get("last_attempts"),
+            "last_time": summary.get("last_time"),
             # The cards read the language from here when they have no override.
             "language": self.coordinator.language,
         }

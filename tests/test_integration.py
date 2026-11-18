@@ -106,6 +106,13 @@ def entry(hass: HomeAssistant) -> MockConfigEntry:
     return entry
 
 
+@pytest.fixture
+def fast_retries():
+    """Drop the pause between re-sends so retry tests run instantly."""
+    with patch("custom_components.goodwe_tou.coordinator._RETRY_DELAY", 0):
+        yield
+
+
 def _entry_with_options(hass: HomeAssistant, **options: object) -> MockConfigEntry:
     """A config entry whose addon options have been set by the user."""
     entry = MockConfigEntry(
@@ -420,7 +427,7 @@ async def test_read_retries_a_foreign_exception(
 
 @pytest.mark.asyncio
 async def test_set_time_raises_when_inverter_ignores_it(
-    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
 ):
     """An unverified single-register write must surface instead of silently reverting."""
 
@@ -445,6 +452,18 @@ async def test_set_time_raises_when_inverter_ignores_it(
                 blocking=True,
             )
         await hass.async_block_till_done()
+
+    # The write was sent three times before giving up, which the log and the
+    # retry counter both record.
+    entry_log = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ][0]
+    assert entry_log["result"] == "error"
+    assert entry_log["attempts"] == 3
+    retries = hass.states.get("sensor.goodwe_time_of_use_herpogingen")
+    # Three attempts means two re-sends, which is what the counter tallies.
+    assert retries.state == "2"
+    assert retries.attributes["last_attempts"] == 3
 
 
 @pytest.mark.asyncio
@@ -611,7 +630,7 @@ async def test_activity_log_records_a_write(
 
 @pytest.mark.asyncio
 async def test_activity_log_records_a_failed_write(
-    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
 ):
     with (
         patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
@@ -641,6 +660,51 @@ async def test_activity_log_records_a_failed_write(
     assert entry_log["action"] == "set_windows"
     assert entry_log["result"] == "error"
     assert entry_log["error"]
+    # All three sends failed, so the badge can say "3x mislukt".
+    assert entry_log["attempts"] == 3
+    assert hass.states.get("sensor.goodwe_time_of_use_herpogingen").state == "2"
+
+
+@pytest.mark.asyncio
+async def test_write_retries_once_then_succeeds(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
+):
+    """A dropped first send is re-sent, and the retry counter records it."""
+    calls = {"n": 0}
+
+    def _drop_first(register: int, value: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return  # the overloaded dongle drops the first register
+        if BASE <= register < BASE + 16:
+            store[register - BASE] = value & 0xFFFF
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        patch.object(GoodweUdpClient, "write_register", side_effect=_drop_first),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        await hass.services.async_call(
+            DOMAIN,
+            "set_windows",
+            {"windows": [{"start": "02:00", "stop": "05:00", "power": -80}]},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    # The change stuck on the second send.
+    assert hass.states.get("time.goodwe_time_of_use_window_1_start").state == "02:00:00"
+    entry_log = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ][0]
+    assert entry_log["result"] == "ok"
+    assert entry_log["attempts"] == 2
+    retries = hass.states.get("sensor.goodwe_time_of_use_herpogingen")
+    assert retries.state == "1"
+    assert retries.attributes["total"] == 1
+    assert retries.attributes["last_attempts"] == 2
 
 
 @pytest.mark.asyncio
