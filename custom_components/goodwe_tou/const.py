@@ -37,6 +37,7 @@ CONF_CHARGE_KW: Final = "charge_kw"
 CONF_DISCHARGE_KW: Final = "discharge_kw"
 CONF_STANDBY_KW: Final = "standby_kw"
 CONF_EXPORT_HOURS: Final = "export_hours"
+CONF_EXPORT_MIN_SPREAD: Final = "export_min_spread"
 CONF_EXPORT_LIMIT: Final = "export_limit"
 CONF_TARGET_SOC: Final = "target_soc"
 CONF_MIN_SOC: Final = "min_soc"
@@ -107,6 +108,12 @@ DEFAULT_BATTERY_COST_PER_KWH: Final = 0.05
 #: purchase price before the battery is allowed to export in the expensive
 #: hours.
 DEFAULT_EXPORT_MIN_SPREAD: Final = 0.20
+#: When the planner decides to hold the battery back for an expensive hour it
+#: does so with a tiny charge window: the inverter is in general mode and would
+#: otherwise cover the house from the battery, draining it before the peak. 1%
+#: of the charge power just offsets that self-consumption, so the energy is still
+#: there when the price peaks.
+DEFAULT_HOLD_WINDOW_PERCENT: Final = 1
 #: Maximum power (W) the inverter may feed back to the grid. The GoodWe blocks
 #: *all* export when this is 0, which also stops the discharge windows: the
 #: battery then only covers the house load. Default to the inverter's AC rating.

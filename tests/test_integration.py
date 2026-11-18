@@ -27,6 +27,7 @@ from custom_components.goodwe_tou.const import (
     CONF_ADAPTIVE_LOAD,
     CONF_CHARGE_WINDOWS,
     CONF_DISCHARGE_WINDOWS,
+    CONF_EXPORT_MIN_SPREAD,
     CONF_LANGUAGE,
     CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
@@ -1826,6 +1827,21 @@ async def test_options_flow_offers_a_language(
     assert result["type"] == "form"
     keys = {str(key) for key in result["data_schema"].schema}
     assert "language" in keys
+
+
+@pytest.mark.asyncio
+async def test_options_flow_offers_an_export_spread(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The configured export spread is selectable from the Configure dialog."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == "form"
+    keys = {str(key) for key in result["data_schema"].schema}
+    assert CONF_EXPORT_MIN_SPREAD in keys
 
 
 @pytest.mark.asyncio

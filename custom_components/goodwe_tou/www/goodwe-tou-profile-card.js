@@ -24,7 +24,7 @@
  *   language: en                                # optional, overrides the language
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.9.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 
 // Everything the card says, per language. A value may be a function when it

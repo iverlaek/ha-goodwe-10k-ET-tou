@@ -26,6 +26,7 @@ from .const import (
     CONF_DISCHARGE_KW,
     CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
+    CONF_EXPORT_MIN_SPREAD,
     CONF_EXPORT_LIMIT,
     CONF_HOST,
     CONF_MIN_CELL_VOLTAGE,
@@ -114,6 +115,9 @@ SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_EXPORT_HOURS): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=24)
+        ),
+        vol.Optional(CONF_EXPORT_MIN_SPREAD): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=1)
         ),
         vol.Optional(CONF_EXPORT_LIMIT): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=65535)

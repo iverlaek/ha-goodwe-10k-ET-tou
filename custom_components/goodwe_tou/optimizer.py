@@ -40,6 +40,7 @@ from .const import (
     DEFAULT_DISCHARGE_KW,
     DEFAULT_EXPORT_HOURS,
     DEFAULT_EXPORT_MIN_SPREAD,
+    DEFAULT_HOLD_WINDOW_PERCENT,
     DEFAULT_LANGUAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_POWER_KW,
@@ -100,6 +101,9 @@ class Plan:
     reasons: list[PlanReason] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     lang: str = DEFAULT_LANGUAGE
+    #: The export-spread threshold this plan was computed with, so the dashboard
+    #: can show the same value in its selector.
+    export_min_spread: float | None = None
 
     @property
     def summary(self) -> str:
@@ -225,7 +229,7 @@ def _run_to_windows(
 
 
 def _plan_overview(
-    planned: Sequence[tuple[str, tuple[int, int], float]],
+    planned: Sequence[tuple[str, tuple[int, int], float, int]],
     slots: Sequence[PriceSlot],
     slot_minutes: int,
     today: dt.date,
@@ -240,22 +244,29 @@ def _plan_overview(
     if not planned:
         return ""
     by_day: dict[dt.date, list[str]] = {}
-    for mode, run, _power in planned:
+    for mode, run, _power, _percent in planned:
         start_dt = slots[run[0]].time
         stop_dt = slots[run[1]].time + dt.timedelta(minutes=slot_minutes)
-        day = start_dt.date()
-        if stop_dt.date() != day:
-            stop_dt = dt.datetime.combine(day, dt.time(23, 59))
         verb = translate(lang, f"mode.{mode}")
-        by_day.setdefault(day, []).append(
-            translate(
-                lang,
-                "plan.overview_item",
-                verb=verb,
-                start=f"{start_dt:%H:%M}",
-                stop=f"{stop_dt:%H:%M}",
+        # Split a run that crosses midnight into one item per day, exactly like
+        # the windows it turns into.
+        cursor = start_dt
+        while cursor < stop_dt:
+            boundary = min(stop_dt, _next_midnight(cursor))
+            day = cursor.date()
+            segment_stop = min(
+                boundary, cursor.replace(hour=23, minute=59, second=0, microsecond=0)
             )
-        )
+            by_day.setdefault(day, []).append(
+                translate(
+                    lang,
+                    "plan.overview_item",
+                    verb=verb,
+                    start=f"{cursor:%H:%M}",
+                    stop=f"{segment_stop:%H:%M}",
+                )
+            )
+            cursor = boundary
     parts = [
         translate(
             lang,
@@ -371,6 +382,209 @@ def _run_stats(
         "max_price": max(prices) if prices else 0.0,
         "energy_kwh": count * max(0.0, float(power_kw)) * slot_minutes / 60.0,
     }
+
+
+@dataclass(frozen=True)
+class _ChargeChoice:
+    """The outcome of the cost simulation: what to do and what it costs."""
+
+    baseline: float
+    cost: float
+    charge: tuple[int, ...] = ()
+    hold: tuple[int, int] | None = None
+    charge_cost: float | None = None
+    hold_cost: float | None = None
+
+
+def _slot_load_kwh(
+    profile: Sequence[float] | None,
+    standby_kw: float,
+    moment: dt.datetime,
+    slot_minutes: int,
+) -> float:
+    """Energy the house draws in one slot, from the measured profile if we have it."""
+    if profile is not None:
+        return _profile_load_kwh(
+            profile,
+            moment,
+            moment + dt.timedelta(minutes=slot_minutes),
+            slot_minutes=slot_minutes,
+            fallback_kw=standby_kw,
+        )
+    return max(0.0, standby_kw) * slot_minutes / 60.0
+
+
+def _simulate_cost(
+    future: Sequence[PriceSlot],
+    profile: Sequence[float] | None,
+    standby_kw: float,
+    slot_minutes: int,
+    *,
+    soc_kwh: float,
+    usable_kwh: float,
+    charge_kw: float,
+    discharge_kw: float,
+    rte: float,
+    battery_cost_per_kwh: float,
+    charge_idx: Iterable[int] = (),
+    hold_idx: Iterable[int] = (),
+    hold_kw: float = 0.0,
+) -> float:
+    """Predicted grid cost (EUR) of running the battery over the whole horizon.
+
+    This follows what the inverter actually does in general mode: outside a
+    window the battery covers the house load (up to its power limit and its
+    charge) and the rest is bought. A charge window buys the full charge power
+    *plus* the house load and only the charged kWh carry the battery wear. A hold
+    window buys the house load at the full house load and keeps the battery in
+    place with a small trickle, so its energy survives until the expensive hour.
+
+    Everything is expressed in kWh above ``min_soc``, which is the energy the
+    battery can actually use.
+    """
+    slot_hours = slot_minutes / 60.0
+    soc = max(0.0, min(usable_kwh, soc_kwh))
+    charge = set(charge_idx)
+    hold = set(hold_idx)
+    cost = 0.0
+    for index, slot in enumerate(future):
+        load = _slot_load_kwh(profile, standby_kw, slot.time, slot_minutes)
+        if index in charge and soc < usable_kwh - 1e-9:
+            drawn = max(0.0, charge_kw) * slot_hours
+            soc = min(usable_kwh, soc + drawn * rte)
+            cost += drawn * (slot.price + battery_cost_per_kwh)
+            cost += load * slot.price
+        elif index in hold:
+            room = max(0.0, usable_kwh - soc)
+            drawn = min(max(0.0, hold_kw) * slot_hours, room / max(rte, 1e-9))
+            soc = min(usable_kwh, soc + drawn * rte)
+            cost += drawn * slot.price
+            cost += load * slot.price
+        else:
+            discharge = min(load, soc, max(0.0, discharge_kw) * slot_hours)
+            soc = max(0.0, soc - discharge)
+            cost += (load - discharge) * slot.price
+    return cost
+
+
+def _hold_starts(
+    future: Sequence[PriceSlot],
+    now: dt.datetime,
+    slot_minutes: int,
+    limit: int = 3,
+) -> list[int]:
+    """Candidate slots to hold the battery until: the start of a price peak.
+
+    The battery is held from now until just before one of these slots. Holding
+    until the single most expensive slot is not always best (the peak is a whole
+    block, and the battery may be better spent on an earlier one), so the three
+    most expensive, well-separated slots are offered to the simulation.
+    """
+    if len(future) < 9:
+        return []
+    minimum = max(4, int(round(60 / max(1, slot_minutes))))
+    starts: list[int] = []
+    by_price = sorted(
+        range(len(future)), key=lambda i: future[i].price, reverse=True
+    )
+    for index in by_price:
+        if index < minimum or future[index].time - now < dt.timedelta(hours=2):
+            continue
+        if any(abs(index - other) < 4 for other in starts):
+            continue
+        starts.append(index)
+        if len(starts) >= limit:
+            break
+    return sorted(starts)
+
+
+def _choose_charge(
+    indexed: Sequence[tuple[int, PriceSlot]],
+    future: Sequence[PriceSlot],
+    profile: Sequence[float] | None,
+    standby_kw: float,
+    slot_minutes: int,
+    *,
+    now: dt.datetime,
+    soc_kwh: float,
+    usable_kwh: float,
+    charge_kw: float,
+    discharge_kw: float,
+    rte: float,
+    battery_cost_per_kwh: float,
+    hold_kw: float,
+) -> _ChargeChoice:
+    """The cheapest of: leave the battery alone, charge N cheap slots, or hold.
+
+    ``cost`` is the predicted cost of the winning option; ``baseline`` is the
+    cost of doing nothing, so the note can show the euro saving. The baseline is
+    always a candidate, so charging or holding is only chosen when it is
+    genuinely cheaper over the whole horizon.
+    """
+    slot_hours = slot_minutes / 60.0
+    common = dict(
+        soc_kwh=soc_kwh,
+        usable_kwh=usable_kwh,
+        charge_kw=charge_kw,
+        discharge_kw=discharge_kw,
+        rte=rte,
+        battery_cost_per_kwh=battery_cost_per_kwh,
+    )
+    baseline = _simulate_cost(
+        future, profile, standby_kw, slot_minutes, **common
+    )
+    best_cost = baseline
+    best_idx: list[int] = []
+    best_hold: tuple[int, int] | None = None
+    best_charge_cost: float | None = None
+    best_hold_cost: float | None = None
+    if usable_kwh - soc_kwh > 1e-9:
+        per_slot = max(1e-6, charge_kw * rte * slot_hours)
+        max_slots = min(
+            len(future), max(1, math.ceil((usable_kwh - soc_kwh) / per_slot))
+        )
+        for count in range(1, max_slots + 1):
+            chosen = frozenset(_select_indices(indexed, count, cheapest=True))
+            cost = _simulate_cost(
+                future,
+                profile,
+                standby_kw,
+                slot_minutes,
+                charge_idx=chosen,
+                **common,
+            )
+            if best_charge_cost is None or cost < best_charge_cost:
+                best_charge_cost = cost
+            if cost < best_cost - 1e-9:
+                best_cost = cost
+                best_idx = sorted(chosen)
+                best_hold = None
+        if hold_kw > 0:
+            for start in _hold_starts(future, now, slot_minutes):
+                hold = frozenset(range(0, start))
+                cost = _simulate_cost(
+                    future,
+                    profile,
+                    standby_kw,
+                    slot_minutes,
+                    hold_idx=hold,
+                    hold_kw=hold_kw,
+                    **common,
+                )
+                if best_hold_cost is None or cost < best_hold_cost:
+                    best_hold_cost = cost
+                if cost < best_cost - 1e-9:
+                    best_cost = cost
+                    best_idx = []
+                    best_hold = (0, start - 1)
+    return _ChargeChoice(
+        baseline=baseline,
+        cost=best_cost,
+        charge=tuple(best_idx),
+        hold=best_hold,
+        charge_cost=best_charge_cost,
+        hold_cost=best_hold_cost,
+    )
 
 
 def build_plan(
@@ -491,15 +705,49 @@ def build_plan(
 
     indexed = list(enumerate(future))
 
-    # -- charge: the cheapest quarter hours, sized so the battery really reaches
-    # the target. The drain between now and the charge window, the drain during
-    # charging and the round-trip losses are charged back too, so a battery that
-    # is low in the early morning is filled all the way up before the day starts.
+    # -- charge, hold or leave alone: pick the cheapest of the three.
+    #
+    # The old gate compared the average charge price with the most expensive
+    # hour. That ignores the measured load and the way the inverter drains the
+    # battery to cover the house when no window is active. With a load forecast
+    # we simulate the whole horizon instead: leave the battery alone, charge the
+    # cheapest quarter hours, or hold it back for a peak with a small charge
+    # window (without one the inverter would self-consume the energy away).
     charge_idx: list[int] = []
     charge_avg = 0.0
     reference_avg = 0.0
     skipped_charge = False
-    if soc < target_soc and capacity_kwh > 0:
+    hold_run: tuple[int, int] | None = None
+    choice: _ChargeChoice | None = None
+    usable_kwh = max(0.0, (target_soc - min_soc) / 100.0 * capacity_kwh)
+    soc_above_min = max(0.0, (soc - min_soc) / 100.0 * capacity_kwh)
+    hold_kw = charge_power_kw * DEFAULT_HOLD_WINDOW_PERCENT / 100.0
+
+    simulate = (profile is not None or standby_kw > 0.0) and capacity_kwh > 0
+    if simulate and soc < target_soc:
+        choice = _choose_charge(
+            indexed,
+            future,
+            profile,
+            standby_kw,
+            slot_minutes,
+            now=now,
+            soc_kwh=soc_above_min,
+            usable_kwh=usable_kwh,
+            charge_kw=charge_power_kw,
+            discharge_kw=discharge_power_kw,
+            rte=rte,
+            battery_cost_per_kwh=battery_cost_per_kwh,
+            hold_kw=hold_kw if soc_above_min > 0 else 0.0,
+        )
+        charge_idx = list(choice.charge)
+        hold_run = choice.hold
+        if charge_idx:
+            charge_avg = sum(future[i].price for i in charge_idx) / len(charge_idx)
+    elif soc < target_soc and capacity_kwh > 0:
+        # No load forecast: keep the historical price-average gate. It cannot
+        # model self-consumption, so it only compares the charge price with the
+        # expensive hours, and existing behaviour is preserved.
         n_charge = min(
             len(future),
             math.ceil(
@@ -600,6 +848,12 @@ def build_plan(
             if slot.price + 1e-9 >= export_floor
         ]
         export_skipped = available_kwh > 0 and bool(remaining) and not candidates
+    if hold_run is not None:
+        # The energy is being held for the peak at the end of the hold, so do
+        # not export it on an earlier peak that the hold window covers.
+        candidates = [
+            (index, slot) for index, slot in candidates if index > hold_run[1]
+        ]
 
     if export_cap_kwh is not None:
         # One capped, contiguous window per day so the export budget is spread
@@ -642,6 +896,60 @@ def build_plan(
         )
     elif soc >= target_soc:
         notes.append(translate(lang, "plan.already_target", soc=soc))
+    elif choice is not None:
+        if hold_run is not None:
+            hold_stop = future[hold_run[1]].time + dt.timedelta(
+                minutes=slot_minutes
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.hold_worth_it",
+                    stop=f"{hold_stop:%H:%M}",
+                    cost=choice.cost,
+                    baseline=choice.baseline,
+                    saving=choice.baseline - choice.cost,
+                )
+            )
+        elif charge_idx:
+            charged_kwh = len(charge_idx) * charge_power_kw * slot_hours
+            charge_stop = future[max(charge_idx)].time + dt.timedelta(
+                minutes=slot_minutes
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.charge_note",
+                    soc=soc,
+                    target=target_soc,
+                    standby=_load_kw(now, charge_stop),
+                    rte=rte * 100,
+                    kwh=charged_kwh,
+                )
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.charge_worth_it",
+                    cost=choice.cost,
+                    baseline=choice.baseline,
+                    saving=choice.baseline - choice.cost,
+                )
+            )
+        else:
+            best_charge = (
+                choice.charge_cost
+                if choice.charge_cost is not None
+                else choice.baseline
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.charge_not_worth_it",
+                    cost=best_charge,
+                    baseline=choice.baseline,
+                )
+            )
     elif charge_idx:
         charged_kwh = len(charge_idx) * charge_power_kw * slot_hours
         charge_stop = future[max(charge_idx)].time + dt.timedelta(minutes=slot_minutes)
@@ -738,35 +1046,54 @@ def build_plan(
     elif standby_kw > 0:
         notes.append(translate(lang, "plan.standby_note", standby=standby_kw))
 
-    planned: list[tuple[str, tuple[int, int], float]] = []
+    planned: list[tuple[str, tuple[int, int], float, int]] = []
     for run in charge_runs:
-        planned.append(("charge", run, charge_power_kw))
+        planned.append(("charge", run, charge_power_kw, power_percent))
+    if hold_run is not None:
+        planned.append(
+            ("hold", hold_run, hold_kw, DEFAULT_HOLD_WINDOW_PERCENT)
+        )
     for run in discharge_runs:
-        planned.append(("discharge", run, discharge_power_kw))
+        planned.append(("discharge", run, discharge_power_kw, power_percent))
     planned.sort(key=lambda item: item[1][0])
 
     windows: list[TouWindow] = []
     reasons: list[PlanReason] = []
-    for mode, run, power_kw in planned:
+    for mode, run, power_kw, percent in planned:
         stats = _run_stats(run, future, slot_minutes, power_kw)
-        for window in _run_to_windows(run, future, slot_minutes, mode, power_percent):
+        # A hold is a physical charge window at a trickle; only the explanation
+        # and the per-day overview call it "hold".
+        physical_mode = "charge" if mode == "hold" else mode
+        first_number = len(windows) + 1
+        for window in _run_to_windows(
+            run, future, slot_minutes, physical_mode, percent
+        ):
             windows.append(window)
-        number = len(windows)
-        if mode == "charge":
-            reasons.append(
-                PlanReason(
-                    window=number,
-                    mode=mode,
-                    text=translate(
-                        lang,
-                        "plan.charge_reason",
-                        minutes=stats["minutes"],
-                        avg=stats["avg_price"],
-                        power=power_kw,
-                        kwh=stats["energy_kwh"] * rte,
-                        rte=rte * 100,
-                    ),
-                )
+        if len(windows) < first_number:
+            continue
+        if mode == "hold":
+            peak = max(
+                (slot.price for slot in future[run[1] + 1 :]), default=0.0
+            )
+            run_stop = future[run[1]].time + dt.timedelta(minutes=slot_minutes)
+            text = translate(
+                lang,
+                "plan.hold_reason",
+                start=f"{future[run[0]].time:%H:%M}",
+                stop=f"{run_stop:%H:%M}",
+                percent=percent,
+                kwh=soc_above_min,
+                peak=peak,
+            )
+        elif mode == "charge":
+            text = translate(
+                lang,
+                "plan.charge_reason",
+                minutes=stats["minutes"],
+                avg=stats["avg_price"],
+                power=power_kw,
+                kwh=stats["energy_kwh"] * rte,
+                rte=rte * 100,
             )
         else:
             revenue = stats["energy_kwh"] * stats["avg_price"]
@@ -775,25 +1102,32 @@ def build_plan(
                 if per_day_discharge
                 else translate(lang, "plan.coming_period")
             )
-            reasons.append(
-                PlanReason(
-                    window=number,
-                    mode=mode,
-                    text=translate(
-                        lang,
-                        "plan.discharge_reason",
-                        minutes=stats["minutes"],
-                        when=when,
-                        avg=stats["avg_price"],
-                        power=power_kw,
-                        kwh=stats["energy_kwh"],
-                        revenue=revenue,
-                    ),
-                )
+            text = translate(
+                lang,
+                "plan.discharge_reason",
+                minutes=stats["minutes"],
+                when=when,
+                avg=stats["avg_price"],
+                power=power_kw,
+                kwh=stats["energy_kwh"],
+                revenue=revenue,
             )
+        # A run that crosses midnight becomes one window per day; explain each
+        # of them so the reason list stays aligned with the windows.
+        for number in range(first_number, len(windows) + 1):
+            reasons.append(PlanReason(window=number, mode=mode, text=text))
 
     if not windows:
-        notes.append(translate(lang, "plan.no_windows"))
+        # Do not say "no windows" as if the planner gave up: name the real
+        # reason, which is either a full battery or ECO self-consumption.
+        notes.append(
+            translate(
+                lang,
+                "plan.no_windows_target"
+                if soc >= target_soc
+                else "plan.no_windows_selfuse",
+            )
+        )
 
     # Lead with a per-day overview so the plan as a whole names which day each
     # window runs on ("vandaag ... en morgen ..."), not just each window's own reason.
@@ -803,7 +1137,13 @@ def build_plan(
 
     windows = windows[:budget]
     reasons = [reason for reason in reasons if reason.window <= budget]
-    return Plan(windows=windows, reasons=reasons, notes=notes, lang=lang)
+    return Plan(
+        windows=windows,
+        reasons=reasons,
+        notes=notes,
+        lang=lang,
+        export_min_spread=export_min_spread,
+    )
 
 
 def plan_windows(
@@ -885,10 +1225,16 @@ def windows_cost(
                 total += (
                     (slot.price + max(0.0, float(battery_cost_per_kwh)))
                     * max(0.0, float(charge_power_kw))
+                    * max(0.0, window.power) / 100.0
                     * slot_hours
                 )
             elif window.mode == "discharge":
-                total -= slot.price * max(0.0, float(discharge_power_kw)) * slot_hours
+                total -= (
+                    slot.price
+                    * max(0.0, float(discharge_power_kw))
+                    * max(0.0, window.power) / 100.0
+                    * slot_hours
+                )
             break
     return total
 

@@ -557,20 +557,35 @@ discharge window instead of the whole budget being spent on tomorrow's peak, and
 a bad solar period cannot drain the battery so early that the house has to buy
 expensive power at the peak.
 
-Charging is only planned when it actually pays off. Every kWh taken from the grid
-is grossed up for the round-trip losses of the battery (`rte`, 85% by default),
-so it is roughly 15% more expensive once it is stored. The plan charges in the
-cheapest quarter hours only when that price still beats the most expensive hours
-the house would otherwise buy later. When the spread does not cover the losses,
-the battery is left alone and a note explains why.
+Charging, holding and doing nothing are compared by **simulating the whole price
+horizon** against the measured load profile. Every kWh taken from the grid is
+grossed up for the round-trip losses of the battery (`rte`, 85% by default), and
+the simulation follows what the inverter really does in general mode: outside a
+window the battery covers the house load, so energy that is not needed yet drains
+away before the evening peak. The planner therefore picks the cheapest of:
+
+* **charge** the cheapest quarter hours, sized to reach the target;
+* **hold** the battery back until a price peak with a **1% trickle charge
+  window**. The inverter is in general mode and would otherwise cover the house
+  from the battery; the trickle stops that, so the energy is still there when the
+  price peaks;
+* **do nothing**, when neither is cheaper than letting the inverter
+  self-consume.
+
+The plan notes and the activity log state the outcome in euros, for example
+"holding until 08:00 is expected to save €0.52: €4.44 instead of €4.96", so you
+can see which option won and by how much.
 
 Purchased electricity is priced **5 ct/kWh higher** in that calculation to cover
 battery wear: the buy price is the market slot price plus €0.05. The battery only
 **exports** in the expensive hours when the spread — the export price minus that
-battery-cost-adjusted buy price — is at least **20 ct/kWh**. Below that, the plan
-leaves the battery for the house instead of forcing an export. The plan notes and
-the activity log state the calculation with the actual numbers, so you can see
-which buy price, spread and threshold the planner used.
+battery-cost-adjusted buy price — is at least **20 ct/kWh** by default. Below
+that, the plan leaves the battery for the house instead of forcing an export. The
+threshold is selectable: change `export_min_spread` in the **Configure** dialog,
+pass it to the service, or edit the **min. spread** box (in cents) on the planner
+card before recalculating. The plan notes and the activity log state the
+calculation with the actual numbers, so you can see which buy price, spread and
+threshold the planner used.
 
 The defaults can be changed in the integration **Configure** dialog or passed to
 the service:
@@ -593,6 +608,7 @@ data:
   temp_coeff: 0.05
   degree_base_c: 15.5
   export_hours: 1
+  export_min_spread: 0.20
   target_soc: 100
   min_soc: 20
   pv_factor: 0.5
@@ -617,6 +633,7 @@ data:
 | `degree_base_c` | `15.5` | Heating degree days are counted below this feels-like temperature |
 | `deviation_size` | `2160` | How many hourly deviation samples to keep (newest first; max `10000`) |
 | `export_hours` | `1` | How long the battery may export at full power **per day** before it is kept for the house; `0` disables the cap |
+| `export_min_spread` | `0.20` | Minimum export spread over the battery-cost-adjusted buy price (€/kWh); the planner card exposes it in cents |
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
 | `pv_factor` | `0.5` | Fraction of the PV forecast counted as a discount on the energy the house would buy |

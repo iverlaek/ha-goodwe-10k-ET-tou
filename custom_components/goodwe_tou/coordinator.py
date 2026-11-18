@@ -37,6 +37,7 @@ from .const import (
     CONF_DISCHARGE_KW,
     CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
+    CONF_EXPORT_MIN_SPREAD,
     CONF_EXPORT_LIMIT,
     CONF_LANGUAGE,
     CONF_LOAD_ENTITY,
@@ -73,6 +74,7 @@ from .const import (
     DEFAULT_DISCHARGE_KW,
     DEFAULT_DISCHARGE_WINDOWS,
     DEFAULT_EXPORT_HOURS,
+    DEFAULT_EXPORT_MIN_SPREAD,
     DEFAULT_EXPORT_LIMIT,
     DEFAULT_LANGUAGE,
     DEFAULT_LOAD_ENTITY,
@@ -1608,6 +1610,9 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         charge_kw, discharge_kw = self._power_settings(overrides)
         standby_kw = self._standby_setting(overrides)
         export_hours = setting(CONF_EXPORT_HOURS, DEFAULT_EXPORT_HOURS)
+        export_min_spread = float(
+            setting(CONF_EXPORT_MIN_SPREAD, DEFAULT_EXPORT_MIN_SPREAD)
+        )
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
         pv_factor = float(setting(CONF_PV_FACTOR, DEFAULT_PV_FACTOR))
@@ -1640,6 +1645,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             standby_kw=standby_kw,
             load_profile=load_profile,
             export_hours=None if export_hours is None else float(export_hours),
+            export_min_spread=export_min_spread,
             rte=rte,
             charge_windows=charge_windows,
             discharge_windows=discharge_windows,
@@ -1682,6 +1688,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "reasons": plan.reason_texts(),
             "summary": plan.summary,
             "notes": list(plan.notes),
+            "export_min_spread": plan.export_min_spread,
             "planned_at": dt.datetime.now(dt.UTC)
             .astimezone()
             .isoformat(timespec="seconds"),

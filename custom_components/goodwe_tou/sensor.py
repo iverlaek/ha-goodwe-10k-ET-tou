@@ -158,6 +158,7 @@ class TouPlanSensor(GoodweTouEntity, SensorEntity):
             "reasons": plan.get("reasons", []),
             "summary": plan.get("summary"),
             "notes": plan.get("notes", []),
+            "export_min_spread": plan.get("export_min_spread"),
             "planned_at": plan.get("planned_at"),
         }
 

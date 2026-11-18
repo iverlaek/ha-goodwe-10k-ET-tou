@@ -42,9 +42,10 @@
  *   prefix: goodwe_time_of_use                           # optional
  *   price_entity: sensor.average_electricity_price       # optional
  *   slot_minutes: 15                                     # optional, timeline granularity
+ *   spread_ct: 20                                        # optional, minimum export spread (ct/kWh)
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.9.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -61,6 +62,8 @@ const LANGS = {
     read: "Lezen van omvormer",
     calc: "Optimale prijzen berekenen",
     apply: "Toepassen",
+    spread: "min. spread",
+    spreadTitle: "Minimale teruglever-spread boven de inkoopprijs, in cent per kWh. Pas dit aan en klik daarna op \u201cOptimale prijzen berekenen\u201d.",
     dayLabels: ["ma", "di", "wo", "do", "vr", "za", "zo"],
     dayFull: [
       "Maandag",
@@ -105,6 +108,8 @@ const LANGS = {
     read: "Read from inverter",
     calc: "Set cheapest hours",
     apply: "Apply",
+    spread: "min. spread",
+    spreadTitle: "Minimum export spread over the purchase price, in cents per kWh. Change it and then click \u201cSet cheapest hours\u201d.",
     dayLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     dayFull: [
       "Monday",
@@ -289,6 +294,8 @@ const STYLES = `
   .actions button { flex: 1 1 30%; padding: 9px 8px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--secondary-background-color); color: var(--primary-text-color); font: inherit; cursor: pointer; }
   .actions button.primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
   .actions button:active { transform: translateY(1px); }
+  .actions label.spread { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--secondary-text-color); }
+  .actions label.spread input { width: 56px; padding: 6px 4px; border-radius: 6px; border: 1px solid var(--divider-color); background: var(--card-background-color, var(--secondary-background-color)); color: var(--primary-text-color); font: inherit; text-align: right; }
   .error { color: var(--error-color, #d32f2f); font-size: .8rem; margin-top: 8px; min-height: 1em; }
 
   .reasons { display: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider-color); }
@@ -332,6 +339,8 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._summary = "";
     this._lang = "nl";
     this._langOverride = null;
+    this._spreadCt = 20;
+    this._spreadTouched = false;
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerUp = this._onPointerUp.bind(this);
   }
@@ -342,6 +351,11 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._langOverride = this._config.language || null;
     this._title = this._config.title || null;
     this._priceEntity = this._config.price_entity || null;
+    const spreadCt = Number(this._config.spread_ct);
+    if (Number.isFinite(spreadCt) && spreadCt >= 0) {
+      this._spreadCt = clamp(Math.round(spreadCt), 0, 100);
+      this._spreadTouched = true;
+    }
     this._slot =
       Number(this._config.slot_minutes) > 0 ? Number(this._config.slot_minutes) : 15;
     this._built = false;
@@ -479,6 +493,11 @@ class GoodweTouPlannerCard extends HTMLElement {
           <button id="read" type="button">${this._t("read")}</button>
           <button id="calc" type="button">${this._t("calc")}</button>
           <button id="apply" class="primary" type="button">${this._t("apply")}</button>
+          <label class="spread" title="${escapeHtml(this._t("spreadTitle"))}">
+            <span>${this._t("spread")}</span>
+            <input id="spread" type="number" min="0" max="100" step="1">
+            <span>ct</span>
+          </label>
         </div>
         <div class="reasons" id="reasons"></div>
         <div class="error" id="error"></div>
@@ -543,6 +562,27 @@ class GoodweTouPlannerCard extends HTMLElement {
     root.querySelector("#read").addEventListener("click", () => this._read());
     root.querySelector("#calc").addEventListener("click", () => this._calc());
     root.querySelector("#apply").addEventListener("click", () => this._apply());
+
+    const spreadEl = root.querySelector("#spread");
+    // Start from the spread the last plan used (the Configure option), unless
+    // the card config or the user already picked one.
+    if (!this._spreadTouched) {
+      const planState = this._state(this._entity("sensor", "plan"));
+      const used =
+        planState && planState.attributes
+          ? Number(planState.attributes.export_min_spread)
+          : NaN;
+      if (Number.isFinite(used) && used >= 0) {
+        this._spreadCt = clamp(Math.round(used * 100), 0, 100);
+      }
+    }
+    spreadEl.value = String(this._spreadCt);
+    spreadEl.addEventListener("change", () => {
+      const value = Number(spreadEl.value);
+      if (Number.isFinite(value)) this._spreadCt = clamp(Math.round(value), 0, 100);
+      this._spreadTouched = true;
+      spreadEl.value = String(this._spreadCt);
+    });
 
     // Hover: read the price under the pointer on the price graph.
     this._plotEl.addEventListener("mousemove", (event) => this._onPriceMove(event));
@@ -1312,7 +1352,8 @@ class GoodweTouPlannerCard extends HTMLElement {
   }
 
   _calc() {
-    this._callServiceWithResponse("goodwe_tou", "calculate_cheapest_hours", {})
+    const data = { export_min_spread: this._spreadCt / 100 };
+    this._callServiceWithResponse("goodwe_tou", "calculate_cheapest_hours", data)
       .then((response) => {
         const windows = (response && response.windows) || [];
         this._reasons = (response && response.reasons) || [];

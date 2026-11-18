@@ -111,6 +111,19 @@ set_cheapest_hours:
           max: 24
           step: 0.25
           unit_of_measurement: h
+    export_min_spread:
+      name: Minimum export spread (€/kWh)
+      description: >-
+        How far the selling price must clear the battery-cost-adjusted purchase
+        price before the battery may export. The default is 0.20 (20 ct/kWh).
+        Raise it to export less often, lower it to export on smaller peaks.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          unit_of_measurement: €/kWh
     target_soc:
       name: Target state of charge (%)
       description: State of charge to charge up to and discharge down from.
@@ -268,6 +281,19 @@ calculate_cheapest_hours:
           max: 24
           step: 0.25
           unit_of_measurement: h
+    export_min_spread:
+      name: Minimum export spread (€/kWh)
+      description: >-
+        How far the selling price must clear the battery-cost-adjusted purchase
+        price before the battery may export. The default is 0.20 (20 ct/kWh).
+        Raise it to export less often, lower it to export on smaller peaks.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          unit_of_measurement: €/kWh
     target_soc:
       name: Target state of charge (%)
       description: State of charge to charge up to and discharge down from.

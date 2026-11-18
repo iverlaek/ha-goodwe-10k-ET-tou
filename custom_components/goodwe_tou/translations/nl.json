@@ -44,6 +44,7 @@
           "degree_base_c": "Basistemperatuur graaddagen (\u00b0C)",
           "deviation_size": "Grootte afwijkingslogboek (uren)",
           "export_hours": "Max. terugleverduur op vol vermogen (uur)",
+          "export_min_spread": "Minimale teruglever-spread boven de inkoopprijs (€/kWh)",
           "export_limit": "Terugleverlimiet (W)",
           "target_soc": "Doel-laadstatus (%)",
           "min_soc": "Minimale laadstatus (%)",

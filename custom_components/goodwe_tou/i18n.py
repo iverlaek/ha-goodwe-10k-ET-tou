@@ -73,6 +73,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "day.yesterday": "gisteren",
         "mode.charge": "laden",
         "mode.discharge": "ontladen",
+        "mode.hold": "vasthouden",
         # -- planner notes -------------------------------------------------
         "plan.no_prices": "Geen prijzen beschikbaar.",
         "plan.no_future_prices": "Geen toekomstige prijzen beschikbaar.",
@@ -96,6 +97,22 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.no_cheap_hours": (
             "Batterij {soc:.0f}%; er zijn nu geen goedkope uren om naar het doel "
             "{target:.0f}% te laden."
+        ),
+        "plan.charge_worth_it": (
+            "Laden is naar verwachting \u20ac{saving:.2f} goedkoper: "
+            "\u20ac{cost:.2f} in plaats van \u20ac{baseline:.2f} als de batterij "
+            "met rust wordt gelaten."
+        ),
+        "plan.charge_not_worth_it": (
+            "Laden overgeslagen: met het gemeten verbruik kost laden "
+            "\u20ac{cost:.2f}, niet beter dan \u20ac{baseline:.2f} als de "
+            "batterij met rust wordt gelaten."
+        ),
+        "plan.hold_worth_it": (
+            "Batterij vasthouden tot {stop} is naar verwachting "
+            "\u20ac{saving:.2f} goedkoper: \u20ac{cost:.2f} in plaats van "
+            "\u20ac{baseline:.2f} als de omvormer de batterij zelf laat "
+            "verbruiken."
         ),
         "plan.battery_cost_note": (
             "Inkoopprijs is met \u20ac{cost:.3f}/kWh verhoogd voor "
@@ -155,9 +172,23 @@ CATALOG: dict[str, dict[str, str]] = {
             "{kwh:.1f} kWh; dat levert ongeveer \u20ac{revenue:.2f} op."
         ),
         "plan.coming_period": "de komende periode",
+        "plan.hold_reason": (
+            "Batterij vasthouden van {start} tot {stop} met {percent}% "
+            "laadvermogen, zodat de {kwh:.1f} kWh die er nu is niet door "
+            "zelfverbruik verdwijnt voordat het piekuur van "
+            "\u20ac{peak:.3f}/kWh begint."
+        ),
         "plan.no_windows": (
             "Geen vensters nodig: de batterij is op doel en er valt niets te "
             "ontladen."
+        ),
+        "plan.no_windows_target": (
+            "Geen vensters nodig: de batterij zit al op het doel en de "
+            "teruglever-spread is niet gehaald."
+        ),
+        "plan.no_windows_selfuse": (
+            "Geen vensters nodig: de batterij dekt het huisverbruik in de "
+            "algemene modus uit eigen voorraad."
         ),
         # -- activity log / automation ------------------------------------
         "log.auto_eco": (
@@ -244,6 +275,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "day.yesterday": "yesterday",
         "mode.charge": "charging",
         "mode.discharge": "discharging",
+        "mode.hold": "holding",
         # -- planner notes -------------------------------------------------
         "plan.no_prices": "No prices available.",
         "plan.no_future_prices": "No future prices available.",
@@ -267,6 +299,20 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.no_cheap_hours": (
             "Battery {soc:.0f}%; there are no cheap hours right now to charge "
             "towards the {target:.0f}% target."
+        ),
+        "plan.charge_worth_it": (
+            "Charging is expected to save \u20ac{saving:.2f}: \u20ac{cost:.2f} "
+            "instead of \u20ac{baseline:.2f} if the battery is left alone."
+        ),
+        "plan.charge_not_worth_it": (
+            "Charging skipped: with the measured load it would cost "
+            "\u20ac{cost:.2f}, no better than \u20ac{baseline:.2f} if the battery "
+            "is left alone."
+        ),
+        "plan.hold_worth_it": (
+            "Holding the battery until {stop} is expected to save "
+            "\u20ac{saving:.2f}: \u20ac{cost:.2f} instead of \u20ac{baseline:.2f} "
+            "if the inverter self-consumes the charge."
         ),
         "plan.battery_cost_note": (
             "The purchase price includes \u20ac{cost:.3f}/kWh for battery "
@@ -322,9 +368,22 @@ CATALOG: dict[str, dict[str, str]] = {
             "{kwh:.1f} kWh; that yields about \u20ac{revenue:.2f}."
         ),
         "plan.coming_period": "the coming period",
+        "plan.hold_reason": (
+            "Battery held from {start} to {stop} at {percent}% charge power, so "
+            "the {kwh:.1f} kWh it holds now does not disappear through "
+            "self-consumption before the \u20ac{peak:.3f}/kWh peak hour starts."
+        ),
         "plan.no_windows": (
             "No windows needed: the battery is at target and there is nothing to "
             "discharge."
+        ),
+        "plan.no_windows_target": (
+            "No windows needed: the battery is already at target and the export "
+            "spread is not met."
+        ),
+        "plan.no_windows_selfuse": (
+            "No windows needed: the battery covers the house load from its own "
+            "charge in general mode."
         ),
         # -- activity log / automation ------------------------------------
         "log.auto_eco": (

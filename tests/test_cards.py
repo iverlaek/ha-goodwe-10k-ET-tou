@@ -119,3 +119,11 @@ def test_planner_card_logs_the_calculation_when_applying() -> None:
     """Toepassen passes the plan summary so the activity log shows the maths."""
     text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
     assert "reason: this._summary" in text
+
+
+def test_planner_card_offers_a_selectable_export_spread() -> None:
+    """The minimum export spread is a field on the card, sent with the plan."""
+    text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
+    assert 'id="spread"' in text
+    assert "export_min_spread: this._spreadCt / 100" in text
+    assert "spread_ct" in text

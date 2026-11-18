@@ -44,6 +44,7 @@
           "degree_base_c": "Degree-day base temperature (\u00b0C)",
           "deviation_size": "Deviation log size (hours)",
           "export_hours": "Max export duration at full power (hours)",
+          "export_min_spread": "Minimum export spread over the purchase price (€/kWh)",
           "export_limit": "Grid export limit (W)",
           "target_soc": "Target state of charge (%)",
           "min_soc": "Minimum state of charge (%)",

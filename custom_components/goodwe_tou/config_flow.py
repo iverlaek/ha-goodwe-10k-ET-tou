@@ -26,6 +26,7 @@ from .const import (
     CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
     CONF_EXPORT_LIMIT,
+    CONF_EXPORT_MIN_SPREAD,
     CONF_HOST,
     CONF_LANGUAGE,
     CONF_LOAD_ENTITY,
@@ -67,6 +68,7 @@ from .const import (
     DEFAULT_DISCHARGE_WINDOWS,
     DEFAULT_EXPORT_HOURS,
     DEFAULT_EXPORT_LIMIT,
+    DEFAULT_EXPORT_MIN_SPREAD,
     DEFAULT_HOST,
     DEFAULT_LANGUAGE,
     DEFAULT_LOAD_ENTITY,
@@ -295,6 +297,12 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_EXPORT_HOURS,
                     default=default(CONF_EXPORT_HOURS, DEFAULT_EXPORT_HOURS),
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=24)),
+                vol.Optional(
+                    CONF_EXPORT_MIN_SPREAD,
+                    default=default(
+                        CONF_EXPORT_MIN_SPREAD, DEFAULT_EXPORT_MIN_SPREAD
+                    ),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
                 vol.Optional(
                     CONF_EXPORT_LIMIT,
                     default=default(CONF_EXPORT_LIMIT, DEFAULT_EXPORT_LIMIT),

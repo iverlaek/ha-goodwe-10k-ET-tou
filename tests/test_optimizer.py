@@ -720,3 +720,84 @@ def test_build_plan_profile_changes_the_charge_sizing():
     assert heavy_charge >= flat_charge
 
 
+
+
+def test_hold_keeps_the_battery_for_the_evening_peak():
+    """With a measured load the planner holds the battery instead of charging."""
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    prices = [0.05] * 68 + [0.45] * 4 + [0.05] * 24
+    plan = optimizer.build_plan(
+        _slots_from_prices(start, prices),
+        start,
+        soc=60,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        target_soc=100,
+        min_soc=20,
+        standby_kw=0.0,
+        load_profile=_flat_profile(1.0),
+        rte=0.85,
+        battery_cost_per_kwh=0.05,
+        export_min_spread=0.0,
+        lang="nl",
+    )
+    # The hold is a physical charge window at 1%: enough to stop the inverter
+    # from covering the house from the battery before the peak.
+    holds = [w for w in plan.windows if w.mode == "charge" and w.power <= 2]
+    assert holds, "the battery is held with a trickle charge window"
+    assert any(w.mode == "discharge" for w in plan.windows)
+    assert any("vasthouden" in note for note in plan.notes)
+    assert any("goedkoper" in note for note in plan.notes)
+
+
+def test_charge_decision_reports_the_euro_comparison():
+    """The planner logs what charging would cost against leaving the battery."""
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    prices = [0.40] * 96
+    plan = optimizer.build_plan(
+        _slots_from_prices(start, prices),
+        start,
+        soc=40,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        target_soc=100,
+        min_soc=20,
+        standby_kw=0.0,
+        load_profile=_flat_profile(1.0),
+        rte=0.85,
+        battery_cost_per_kwh=0.05,
+        export_min_spread=0.20,
+        lang="nl",
+    )
+    assert all(w.mode != "charge" for w in plan.windows)
+    note = " ".join(plan.notes)
+    assert "Laden overgeslagen" in note
+    assert "\u20ac" in note
+
+
+def test_export_spread_is_a_parameter():
+    """The minimum export spread can be chosen per plan."""
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    prices = [0.10] * 68 + [0.35] * 4 + [0.10] * 24
+    slots = _slots_from_prices(start, prices)
+
+    def exports(spread: float) -> bool:
+        plan = optimizer.build_plan(
+            slots,
+            start,
+            soc=90,
+            capacity_kwh=24,
+            charge_power_kw=6,
+            discharge_power_kw=6,
+            min_soc=20,
+            standby_kw=0.0,
+            rte=1.0,
+            battery_cost_per_kwh=0.0,
+            export_min_spread=spread,
+        )
+        return any(w.mode == "discharge" for w in plan.windows)
+
+    assert exports(0.20)
+    assert not exports(0.30)
