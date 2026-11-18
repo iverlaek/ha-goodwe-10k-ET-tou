@@ -503,10 +503,11 @@ curves:
 Together they show the real daily "duck curve" of a home with solar: a quiet
 night, a morning peak, a midday dip while the panels cover the house, and an
 evening peak. The panels at the top give the **daily totals** (house load, import
-and export in kWh) and the load's **peak** and **average**. The header reports how
-many days were actually measured — the recorder keeps a limited history, so the
-card tells you the real coverage (e.g. `10 of 14 days measured`) instead of
-pretending the full window is there.
+and export in kWh), the **totals over the measured window** (the daily figure ×
+the number of measured days), and the load's **peak** and **average**. The header
+reports how many days were actually measured — the recorder keeps a limited
+history, so the card tells you the real coverage (e.g. `10 of 14 days measured`)
+instead of pretending the full window is there.
 
 The profile is built from the recorder's **5-minute statistics** for the house
 consumption sensor and the grid power sensor, averaged per quarter of the *local*

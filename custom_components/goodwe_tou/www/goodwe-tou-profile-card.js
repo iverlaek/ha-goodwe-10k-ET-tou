@@ -23,7 +23,7 @@
  *   language: en                                # optional, overrides the language
  */
 
-const CARD_VERSION = "1.5.1";
+const CARD_VERSION = "1.5.2";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 
 // Everything the card says, per language. A value may be a function when it
@@ -46,6 +46,7 @@ const LANGS = {
     loadKwh: "Huisverbruik",
     importKwh: "Inkoop",
     exportKwh: "Verkoop",
+    period: (days) => `Periode (${days} dagen)`,
     peak: "Piek",
     avg: "Gemiddeld",
     updated: "Bijgewerkt",
@@ -70,6 +71,7 @@ const LANGS = {
     loadKwh: "House load",
     importKwh: "Import",
     exportKwh: "Export",
+    period: (days) => `Period (${days} days)`,
     peak: "Peak",
     avg: "Average",
     updated: "Updated",
@@ -330,7 +332,7 @@ class GoodweTouProfileCard extends HTMLElement {
       ? this._t("coverage", days, windowDays)
       : "";
 
-    this._renderPanels(profile, load, imports, exports);
+    this._renderPanels(profile, load, imports, exports, days);
     this._renderChart(load, imports, exports);
 
     const note = this._t("note", windowDays);
@@ -338,7 +340,7 @@ class GoodweTouProfileCard extends HTMLElement {
     this._noteEl.textContent = note + updated;
   }
 
-  _renderPanels(profile, load, imports, exports) {
+  _renderPanels(profile, load, imports, exports, days = 0) {
     const loadKwh = (profile && profile.load_daily_kwh) ?? this._sumKwh(load);
     const importKwh = (profile && profile.import_daily_kwh) ?? this._sumKwh(imports);
     const exportKwh = (profile && profile.export_daily_kwh) ?? this._sumKwh(exports);
@@ -377,6 +379,15 @@ class GoodweTouProfileCard extends HTMLElement {
         [this._t("exportKwh"), `${this._num(exportKwh)} kWh`],
       ])
     );
+    if (days > 0) {
+      this._panelsEl.appendChild(
+        panel(this._t("period", days), [
+          [this._t("loadKwh"), `${this._num(loadKwh * days, 0)} kWh`],
+          [this._t("importKwh"), `${this._num(importKwh * days, 0)} kWh`],
+          [this._t("exportKwh"), `${this._num(exportKwh * days, 0)} kWh`],
+        ])
+      );
+    }
     this._panelsEl.appendChild(
       panel(this._t("load"), [
         [this._t("peak"), `${this._num(loadPeak)} kW`],
