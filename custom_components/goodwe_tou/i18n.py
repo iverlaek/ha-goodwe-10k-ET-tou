@@ -50,6 +50,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "entity.activity_log": "Activiteitenlogboek",
         "entity.min_cell_voltage": "Laagste celspanning",
         "entity.plan": "Plan",
+        "entity.deviation": "Afwijking",
         "entity.prices": "Stroomprijzen",
         "entity.eco_mode": "ECO-modus",
         "entity.auto_replan": "Auto-herberekening",
@@ -112,6 +113,12 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.standby_note": (
             "Het huis gebruikt ongeveer {standby:.1f} kW standby; dat "
             "neemt de batterij in ECO-modus zelf voor haar rekening."
+        ),
+        "plan.load_note": (
+            "Het huisverbruik is weerafhankelijk: {base:.2f} kW basis plus "
+            "{coeff:.2f} kW per graad onder {base_temp:.1f} \u00b0C. Met een "
+            "gevoelstemperatuur van {feels:.1f} \u00b0C ({degrees:.1f} \u00b0C "
+            "onder de drempel) rekent de planning met {load:.2f} kW."
         ),
         "plan.charge_reason": (
             "Goedkoopste {minutes:.0f} min van de komende periode "
@@ -190,6 +197,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "entity.activity_log": "Activity log",
         "entity.min_cell_voltage": "Lowest cell voltage",
         "entity.plan": "Plan",
+        "entity.deviation": "Deviation",
         "entity.prices": "Energy prices",
         "entity.eco_mode": "ECO mode",
         "entity.auto_replan": "Auto re-check",
@@ -251,6 +259,12 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.standby_note": (
             "The house draws about {standby:.1f} kW standby; the battery covers "
             "that itself in ECO mode."
+        ),
+        "plan.load_note": (
+            "The house load follows the weather: {base:.2f} kW base plus "
+            "{coeff:.2f} kW per degree below {base_temp:.1f} \u00b0C. With a "
+            "feels-like temperature of {feels:.1f} \u00b0C ({degrees:.1f} \u00b0C "
+            "below the threshold) the planner assumes {load:.2f} kW."
         ),
         "plan.charge_reason": (
             "Cheapest {minutes:.0f} min of the coming period "

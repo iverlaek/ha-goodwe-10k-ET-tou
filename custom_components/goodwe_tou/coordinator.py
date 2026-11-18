@@ -24,15 +24,19 @@ from .activity import (
 )
 from .const import (
     CELL_VOLTAGE_REGISTERS,
+    CONF_ADAPTIVE_LOAD,
     CONF_AUTO_REPLAN,
     CONF_CAPACITY_KWH,
     CONF_CHARGE_KW,
     CONF_CHARGE_WINDOWS,
+    CONF_DEGREE_BASE_C,
+    CONF_DEVIATION_SIZE,
     CONF_DISCHARGE_KW,
     CONF_DISCHARGE_WINDOWS,
     CONF_EXPORT_HOURS,
     CONF_EXPORT_LIMIT,
     CONF_LANGUAGE,
+    CONF_LOAD_ENTITY,
     CONF_LOG_SIZE,
     CONF_MANUAL_WINDOW,
     CONF_MIN_CELL_VOLTAGE,
@@ -42,21 +46,28 @@ from .const import (
     CONF_PRICE_SOURCE,
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
+    CONF_PV_POWER_ENTITY,
     CONF_RTE,
     CONF_SCAN_INTERVAL,
     CONF_SOC_ENTITY,
     CONF_STANDBY_KW,
     CONF_TARGET_SOC,
+    CONF_TEMP_COEFF,
+    CONF_WEATHER_ENTITY,
     CONF_WINDOW_POWER,
+    DEFAULT_ADAPTIVE_LOAD,
     DEFAULT_AUTO_REPLAN,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_CHARGE_KW,
     DEFAULT_CHARGE_WINDOWS,
+    DEFAULT_DEGREE_BASE_C,
+    DEFAULT_DEVIATION_SIZE,
     DEFAULT_DISCHARGE_KW,
     DEFAULT_DISCHARGE_WINDOWS,
     DEFAULT_EXPORT_HOURS,
     DEFAULT_EXPORT_LIMIT,
     DEFAULT_LANGUAGE,
+    DEFAULT_LOAD_ENTITY,
     DEFAULT_LOG_SIZE,
     DEFAULT_MANUAL_WINDOW,
     DEFAULT_MIN_CELL_VOLTAGE,
@@ -65,11 +76,14 @@ from .const import (
     DEFAULT_PRICE_SOURCE,
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
+    DEFAULT_PV_POWER_ENTITY,
     DEFAULT_RTE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SOC_ENTITY,
     DEFAULT_STANDBY_KW,
     DEFAULT_TARGET_SOC,
+    DEFAULT_TEMP_COEFF,
+    DEFAULT_WEATHER_ENTITY,
     DEFAULT_WINDOW_POWER,
     DOMAIN,
     ECO_WORK_MODE,
@@ -77,11 +91,19 @@ from .const import (
     EXPORT_ENABLED,
     EXPORT_LIMIT_REGISTER,
     GENERAL_WORK_MODE,
+    MAX_DEVIATION_SIZE,
     MAX_LOG_SIZE,
     PRICE_SOURCE_TIBBER,
     WINDOWS,
     WORK_MODE_REGISTER,
 )
+from .deviation import (
+    apparent_temperature,
+    effective_load_kw,
+    learn,
+    make_sample,
+)
+from .deviation import trim as trim_deviation
 from .goodwe_udp import (
     GoodweError,
     GoodweProtocolError,
@@ -125,6 +147,16 @@ def window_to_dict(window: TouWindow) -> dict[str, Any]:
         "mode": window.mode,
         "enabled": window.enabled,
     }
+
+
+def _as_float(value: Any) -> float | None:
+    """Coerce a state or attribute to a float, or ``None`` when it is not one."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class TibberPriceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -202,6 +234,8 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "min_cell_voltage": None,
             "activity": [],
             "plan": None,
+            "deviation": [],
+            "learned": None,
         }
         self._activity: list[dict[str, Any]] = []
         self._activity_store: Store = Store(
@@ -210,6 +244,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         #: The reasoning behind the last computed plan (for the status card).
         self._plan: dict[str, Any] | None = None
         self._plan_store: Store = Store(hass, 1, f"{DOMAIN}_plan_{entry.entry_id}")
+        #: The hourly deviation log (plan vs reality) and the model learned from
+        #: it. Only the *derived* samples live here; the raw temperature and load
+        #: history stays in Home Assistant's recorder database.
+        self._deviation: list[dict[str, Any]] = []
+        self._deviation_store: Store = Store(
+            hass, 1, f"{DOMAIN}_deviation_{entry.entry_id}"
+        )
+        #: The hour bucket currently being accumulated, if any.
+        self._deviation_bucket: dict[str, Any] | None = None
+        #: The learned house-load model, or ``None`` while it is still learning.
+        self._learned: dict[str, Any] | None = None
         #: Whether the quarter-hour re-check may write a new plan by itself.
         self.auto_replan_enabled: bool = bool(
             entry.options.get(CONF_AUTO_REPLAN, DEFAULT_AUTO_REPLAN)
@@ -299,10 +344,263 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return the activity log, newest first, optionally filtered."""
         return filter_entries(self._activity, window=window, result=result, limit=limit)
 
+    # -- deviation log / adaptive load -------------------------------------
+
+    def _deviation_size(self) -> int:
+        """How many hourly deviation samples to keep (newest first)."""
+        value = int(self._option(CONF_DEVIATION_SIZE, DEFAULT_DEVIATION_SIZE))
+        return max(0, min(MAX_DEVIATION_SIZE, value))
+
+    def _adaptive(self) -> bool:
+        """Whether the planner may adjust its house load for the weather."""
+        return bool(self._option(CONF_ADAPTIVE_LOAD, DEFAULT_ADAPTIVE_LOAD))
+
+    def _degree_base_c(self) -> float:
+        """The outdoor temperature below which heating degree days are counted."""
+        return float(self._option(CONF_DEGREE_BASE_C, DEFAULT_DEGREE_BASE_C))
+
+    def _weather_now(self) -> tuple[float | None, float | None, float]:
+        """(outdoor temp, feels-like temp, °C below the base) from the weather entity.
+
+        Home Assistant's weather entity carries the air temperature, humidity and
+        wind, so the feels-like (apparent) temperature is computed here rather than
+        read from a separate sensor.
+        """
+        entity = str(self._option(CONF_WEATHER_ENTITY, DEFAULT_WEATHER_ENTITY))
+        state = self._state(entity)
+        if state is None:
+            return (None, None, 0.0)
+        attributes = state.attributes
+        temp = _as_float(attributes.get("temperature"))
+        if temp is not None and str(
+            attributes.get("temperature_unit", "°C")
+        ).upper().startswith("F"):
+            temp = (temp - 32.0) * 5.0 / 9.0
+        humidity = _as_float(attributes.get("humidity"))
+        wind = _as_float(attributes.get("wind_speed"))
+        if wind is not None and str(
+            attributes.get("wind_speed_unit", "km/h")
+        ).lower().startswith("m"):
+            # The apparent-temperature formula wants km/h; the unit is m/s.
+            wind = wind * 3.6
+        feels = apparent_temperature(temp, humidity, wind)
+        below = 0.0 if feels is None else max(0.0, self._degree_base_c() - feels)
+        return (temp, feels, below)
+
+    def _load_model(self) -> tuple[float, float]:
+        """(base_kw, temp_coeff) the planner should use, learned when possible."""
+        configured_base = float(self._option(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
+        configured_coeff = float(self._option(CONF_TEMP_COEFF, DEFAULT_TEMP_COEFF))
+        if not self._adaptive():
+            return (configured_base, 0.0)
+        learned = self._learned or {}
+        base = _as_float(learned.get("base_kw"))
+        coeff = _as_float(learned.get("temp_coeff"))
+        return (
+            configured_base if base is None else base,
+            configured_coeff if coeff is None else coeff,
+        )
+
+    def _standby_setting(self, overrides: Mapping[str, Any]) -> float:
+        """The house load for a plan: an explicit override wins, else the model."""
+        override = overrides.get(CONF_STANDBY_KW)
+        if override is not None:
+            return max(0.0, float(override))
+        return self.effective_standby_kw()
+
+    def effective_standby_kw(self) -> float:
+        """The house load the planner should assume right now, in kW.
+
+        Grows with the heating degree hours from the learned model, so a cold day
+        (the air conditioner working harder) makes the planner charge a little
+        more and keeps the battery off its floor.
+        """
+        base, coeff = self._load_model()
+        _, feels, below = self._weather_now()
+        return effective_load_kw(base, coeff, feels, self._degree_base_c()) if (
+            feels is not None
+        ) else max(0.0, base)
+
+    def _recompute_learned(self) -> None:
+        """Refit the house-load model from the deviation log."""
+        if not self._adaptive():
+            self._learned = None
+            return
+        self._learned = learn(
+            self._deviation,
+            fallback_base_kw=float(self._option(CONF_STANDBY_KW, DEFAULT_STANDBY_KW)),
+            fallback_temp_coeff=float(self._option(CONF_TEMP_COEFF, DEFAULT_TEMP_COEFF)),
+        )
+
+    async def async_load_deviation(self) -> None:
+        """Load the persisted deviation log (if any) and refit the model."""
+        try:
+            stored = await self._deviation_store.async_load()
+        except Exception:  # pragma: no cover - corrupt/unreadable store
+            _LOGGER.warning("Could not load the deviation log", exc_info=True)
+            return
+        if isinstance(stored, list):
+            self._deviation = [
+                sample for sample in stored if isinstance(sample, dict)
+            ]
+            trim_deviation(self._deviation, self._deviation_size())
+        self._recompute_learned()
+        self._publish(self.data)
+
+    def _schedule_save_deviation(self) -> None:
+        self._deviation_store.async_delay_save(lambda: list(self._deviation), 2.0)
+
+    def _pv_forecast_remaining(self) -> float | None:
+        """The PV forecast that is still ahead for today, in kWh (or ``None``)."""
+        entity = str(self._option(CONF_PV_ENTITY, DEFAULT_PV_ENTITY))
+        state = self._state(entity)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        return _as_float(state.state)
+
+    def _sample_deviation(self, now: dt.datetime | None = None) -> None:
+        """Accumulate the running hour's deviation; finalise when the hour rolls.
+
+        Called on every coordinator poll. Only the *derived* energy is kept — the
+        load and weather sensor history is already in the recorder database.
+        """
+        now = now or dt.datetime.now(dt.UTC).astimezone()
+        hour = now.replace(minute=0, second=0, microsecond=0)
+        bucket = self._deviation_bucket
+        if bucket is None or bucket["hour"] != hour:
+            if bucket is not None:
+                self._finalize_deviation(bucket)
+            bucket = {
+                "hour": hour,
+                "last": now,
+                "hours": 0.0,
+                "actual_kwh": 0.0,
+                "planned_kwh": 0.0,
+                "pv_kwh": 0.0,
+                "temp_hours": 0.0,
+                "temp_elapsed": 0.0,
+                "feels_hours": 0.0,
+                "feels_elapsed": 0.0,
+                "degree_hours": 0.0,
+                "pv_forecast_start": self._pv_forecast_remaining(),
+            }
+            self._deviation_bucket = bucket
+
+        elapsed = (now - bucket["last"]).total_seconds() / 3600.0
+        bucket["last"] = now
+        # Skip a gap (Home Assistant was off, or the poll ran late): integrating
+        # across it would invent consumption that never happened.
+        if elapsed <= 0 or elapsed > 0.5:
+            return
+
+        load_kw = self._float_state(
+            str(self._option(CONF_LOAD_ENTITY, DEFAULT_LOAD_ENTITY)), 0.0
+        ) / 1000.0
+        pv_kw = self._float_state(
+            str(self._option(CONF_PV_POWER_ENTITY, DEFAULT_PV_POWER_ENTITY)), 0.0
+        ) / 1000.0
+        temp, feels, below = self._weather_now()
+
+        bucket["hours"] += elapsed
+        bucket["actual_kwh"] += load_kw * elapsed
+        bucket["planned_kwh"] += self.effective_standby_kw() * elapsed
+        bucket["pv_kwh"] += pv_kw * elapsed
+        if temp is not None:
+            bucket["temp_hours"] += temp * elapsed
+            bucket["temp_elapsed"] += elapsed
+        if feels is not None:
+            bucket["feels_hours"] += feels * elapsed
+            bucket["feels_elapsed"] += elapsed
+        bucket["degree_hours"] += below * elapsed
+
+    def _finalize_deviation(self, bucket: Mapping[str, Any]) -> None:
+        """Turn a finished hour bucket into one log sample and refit the model."""
+        hours = float(bucket["hours"])
+        if hours <= 0.01:
+            return
+        pv_forecast = None
+        start = bucket.get("pv_forecast_start")
+        end = self._pv_forecast_remaining()
+        if start is not None and end is not None:
+            pv_forecast = max(0.0, float(start) - float(end))
+        temp_elapsed = float(bucket["temp_elapsed"])
+        feels_elapsed = float(bucket["feels_elapsed"])
+        sample = make_sample(
+            bucket["hour"],
+            hours=hours,
+            actual_kwh=float(bucket["actual_kwh"]),
+            planned_kwh=float(bucket["planned_kwh"]),
+            outdoor_temp=(
+                float(bucket["temp_hours"]) / temp_elapsed if temp_elapsed else None
+            ),
+            feels_like=(
+                float(bucket["feels_hours"]) / feels_elapsed if feels_elapsed else None
+            ),
+            degree_hour=float(bucket["degree_hours"]),
+            pv_kwh=float(bucket["pv_kwh"]),
+            pv_forecast_kwh=pv_forecast,
+        )
+        self._deviation.insert(0, sample)
+        trim_deviation(self._deviation, self._deviation_size())
+        self._recompute_learned()
+        self._schedule_save_deviation()
+
+    def deviation(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return the deviation log, newest first, optionally capped."""
+        entries = self._deviation if limit is None else self._deviation[:limit]
+        return [dict(entry) for entry in entries]
+
+    def deviation_summary(self) -> dict[str, Any]:
+        """Today's deviation totals, for the sensor and the card."""
+        today = dt.datetime.now(dt.UTC).astimezone().date()
+        actual = planned = degree = 0.0
+        feels_values: list[float] = []
+        pv_actual = pv_forecast = 0.0
+        pv_seen = False
+        count = 0
+        for sample in self._deviation:
+            try:
+                when = dt.datetime.fromisoformat(str(sample.get("time")))
+            except (TypeError, ValueError):
+                continue
+            if when.date() != today:
+                continue
+            count += 1
+            actual += float(sample.get("actual_kwh") or 0.0)
+            planned += float(sample.get("planned_kwh") or 0.0)
+            degree += float(sample.get("degree_hours") or 0.0)
+            feels = sample.get("feels_like")
+            if feels is not None:
+                feels_values.append(float(feels))
+            pv = sample.get("pv_kwh")
+            forecast = sample.get("pv_forecast_kwh")
+            if pv is not None:
+                pv_actual += float(pv)
+                pv_seen = True
+            if forecast is not None:
+                pv_forecast += float(forecast)
+        return {
+            "samples": count,
+            "actual_kwh": round(actual, 2),
+            "planned_kwh": round(planned, 2),
+            "deviation_kwh": round(actual - planned, 2),
+            "degree_days": round(degree / 24.0, 2),
+            "feels_like": (
+                round(sum(feels_values) / len(feels_values), 1)
+                if feels_values
+                else None
+            ),
+            "pv_actual_kwh": round(pv_actual, 2) if pv_seen else None,
+            "pv_forecast_kwh": round(pv_forecast, 2) if pv_seen else None,
+            "pv_error_kwh": round(pv_actual - pv_forecast, 2) if pv_seen else None,
+        }
+
     def _publish(self, data: dict[str, Any]) -> None:
         """Push fresh data to the entities, including the current activity log."""
         data["activity"] = list(self._activity)
         data["plan"] = self._plan
+        data["deviation"] = list(self._deviation)
+        data["learned"] = self._learned
         self.async_set_updated_data(data)
 
     # -- device access -----------------------------------------------------
@@ -378,12 +676,17 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     async def _async_update_data(self) -> dict[str, Any]:
+        # Sample the deviation first, so the log keeps filling even when the
+        # inverter itself cannot be reached this round.
+        self._sample_deviation()
         try:
             data = await self._call(self._read_all)
         except GoodweError as err:
             raise UpdateFailed(str(err)) from err
         data["activity"] = list(self._activity)
         data["plan"] = self._plan
+        data["deviation"] = list(self._deviation)
+        data["learned"] = self._learned
         return data
 
     async def _write(self, mapping: Mapping[int, int]) -> None:
@@ -842,7 +1145,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pv_entity = setting(CONF_PV_ENTITY, DEFAULT_PV_ENTITY)
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
         charge_kw, discharge_kw = self._power_settings(overrides)
-        standby_kw = float(setting(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
+        standby_kw = self._standby_setting(overrides)
         export_hours = setting(CONF_EXPORT_HOURS, DEFAULT_EXPORT_HOURS)
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
@@ -859,7 +1162,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pv_remaining = self._float_state(pv_entity, 0.0)
 
         now = dt.datetime.now(dt.UTC).astimezone()
-        return build_plan(
+        plan = build_plan(
             slots,
             now,
             soc=soc,
@@ -877,6 +1180,24 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             power_percent=window_power,
             lang=self.language,
         )
+        # Explain the weather adjustment, so the number in the standby note does
+        # not look like a mystery. Skipped when the user pinned standby_kw.
+        if self._adaptive() and CONF_STANDBY_KW not in overrides:
+            _, feels, below = self._weather_now()
+            if feels is not None and below > 0:
+                base, coeff = self._load_model()
+                plan.notes.append(
+                    self._t(
+                        "plan.load_note",
+                        load=standby_kw,
+                        base=base,
+                        coeff=coeff,
+                        degrees=below,
+                        feels=feels,
+                        base_temp=self._degree_base_c(),
+                    )
+                )
+        return plan
 
     def _remember_plan(self, plan: Plan) -> None:
         """Remember the reasons behind a computed plan, for the status card.
@@ -929,7 +1250,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_entity = setting(CONF_SOC_ENTITY, DEFAULT_SOC_ENTITY)
         capacity_kwh = float(setting(CONF_CAPACITY_KWH, DEFAULT_CAPACITY_KWH))
         charge_kw, discharge_kw = self._power_settings(overrides)
-        standby_kw = float(setting(CONF_STANDBY_KW, DEFAULT_STANDBY_KW))
+        standby_kw = self._standby_setting(overrides)
         target_soc = float(setting(CONF_TARGET_SOC, DEFAULT_TARGET_SOC))
         min_soc = float(setting(CONF_MIN_SOC, DEFAULT_MIN_SOC))
         rte = float(setting(CONF_RTE, DEFAULT_RTE))

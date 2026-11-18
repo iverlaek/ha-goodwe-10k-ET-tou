@@ -153,6 +153,12 @@ views:
       - type: custom:goodwe-tou-log-card
         title: Logboek
 
+      # How far reality drifted from the plan, hour by hour, with the weather
+      # variables that influence it (outdoor and feels-like temperature, heating
+      # degree hours, PV forecast error) and the house-load model learned from it.
+      - type: custom:goodwe-tou-deviation-card
+        title: Afwijking
+
       - type: entities
         title: Status
         show_header_toggle: false

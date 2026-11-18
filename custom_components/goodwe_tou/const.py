@@ -54,6 +54,16 @@ CONF_MIN_CELL_VOLTAGE: Final = "min_cell_voltage"
 CONF_MANUAL_WINDOW: Final = "manual_window"
 CONF_TIBBER_PRICES: Final = "tibber_prices"
 CONF_TIBBER_HOME: Final = "tibber_home"
+#: Deviation tracking / adaptive house load. The planner's standby load is
+#: adjusted for the weather (cold makes the air conditioner work harder) and
+#: learned from a log of the deviations between plan and reality.
+CONF_WEATHER_ENTITY: Final = "weather_entity"
+CONF_LOAD_ENTITY: Final = "load_entity"
+CONF_PV_POWER_ENTITY: Final = "pv_power_entity"
+CONF_ADAPTIVE_LOAD: Final = "adaptive_load"
+CONF_TEMP_COEFF: Final = "temp_coeff"
+CONF_DEGREE_BASE_C: Final = "degree_base_c"
+CONF_DEVIATION_SIZE: Final = "deviation_size"
 #: The language the integration speaks: the planner's reasoning, the activity
 #: log and the entity names. Chosen at installation, changeable in the options.
 CONF_LANGUAGE: Final = "language"
@@ -114,6 +124,27 @@ DEFAULT_MIN_CELL_VOLTAGE: Final = 3000
 DEFAULT_TIBBER_PRICES: Final = True
 #: Which Tibber home to read when the account has more than one; empty = the first.
 DEFAULT_TIBBER_HOME: Final = ""
+#: Weather entity for the outdoor temperature, humidity and wind. Home Assistant
+#: computes the feels-like (apparent) temperature from those, so no separate
+#: sensor is needed.
+DEFAULT_WEATHER_ENTITY: Final = "weather.forecast_home"
+#: The sensor with the house's real consumption, compared with the plan.
+DEFAULT_LOAD_ENTITY: Final = "sensor.house_consumption"
+#: The PV power sensor, for the forecast-error part of the deviation log.
+DEFAULT_PV_POWER_ENTITY: Final = "sensor.pv_power"
+#: Adjust the planner's house load for the weather and learn it from the log.
+DEFAULT_ADAPTIVE_LOAD: Final = True
+#: Extra house load (kW) per degree the feels-like temperature is below the
+#: degree-day base. The deviation log refines this automatically.
+DEFAULT_TEMP_COEFF: Final = 0.05
+#: Heating degree days are counted below this outdoor (feels-like) temperature.
+DEFAULT_DEGREE_BASE_C: Final = 15.5
+#: How many hourly deviation samples to keep (newest first). The raw sensor
+#: history stays in Home Assistant's recorder; only these derived samples are
+#: retained, and they may be kept much longer.
+DEFAULT_DEVIATION_SIZE: Final = 2160
+#: Hard upper bound for the deviation log size.
+MAX_DEVIATION_SIZE: Final = 10000
 #: The default language: Dutch, because the integration grew up in a Dutch home.
 #: The install step pre-selects the Home Assistant language when we support it.
 DEFAULT_LANGUAGE: Final = "nl"

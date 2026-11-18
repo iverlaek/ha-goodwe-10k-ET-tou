@@ -40,6 +40,7 @@ async def async_setup_entry(
         TouActivitySensor(coordinator),
         TouCellVoltageSensor(coordinator),
         TouPlanSensor(coordinator),
+        TouDeviationSensor(coordinator),
     ]
     if coordinator.price_coordinator is not None and coordinator.config_entry.options.get(
         CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES
@@ -153,6 +154,47 @@ class TouPlanSensor(GoodweTouEntity, SensorEntity):
             "summary": plan.get("summary"),
             "notes": plan.get("notes", []),
             "planned_at": plan.get("planned_at"),
+        }
+
+
+class TouDeviationSensor(GoodweTouEntity, SensorEntity):
+    """The deviation log and the house-load model learned from it.
+
+    The state is how many hourly samples the log holds; the attributes carry the
+    learned model, the current weather-adjusted load, today's totals and the
+    newest samples (the full log is available through the
+    ``goodwe_tou.get_deviations`` service). Only the *derived* samples live here —
+    the raw temperature, humidity and load history stays in Home Assistant's
+    recorder database.
+    """
+
+    _unrecorded_attributes = frozenset({"entries", "today", "learned"})
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "deviation",
+            coordinator._t("entity.deviation"),
+            "mdi:chart-timeline-variant-shimmer",
+            domain="sensor",
+            object_id="afwijking",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.data.get("deviation", []))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        entries = self.coordinator.data.get("deviation", [])
+        return {
+            "entries": entries[:_ATTR_LIMIT],
+            "total": len(entries),
+            "learned": self.coordinator.data.get("learned"),
+            "effective_kw": round(self.coordinator.effective_standby_kw(), 2),
+            "today": self.coordinator.deviation_summary(),
+            # The cards read the language from here when they have no override.
+            "language": self.coordinator.language,
         }
 
 

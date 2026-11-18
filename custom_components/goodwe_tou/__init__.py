@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.frontend import add_extra_js_url
@@ -52,6 +53,7 @@ from .const import (
     DEFAULT_TIBBER_PRICES,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    MAX_DEVIATION_SIZE,
     PRICE_SOURCES,
     PRICE_SOURCE_TIBBER,
 )
@@ -75,12 +77,14 @@ SERVICE_CALCULATE_CHEAPEST_HOURS = "calculate_cheapest_hours"
 SERVICE_SET_WINDOWS = "set_windows"
 SERVICE_FORECAST_SOC = "forecast_soc"
 SERVICE_GET_ACTIVITY = "get_activity"
+SERVICE_GET_DEVIATIONS = "get_deviations"
 
 _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
 _PLANNER_FILE = "goodwe-tou-planner-card.js"
 _LOG_FILE = "goodwe-tou-log-card.js"
 _POWER_FILE = "goodwe-tou-power-card.js"
+_DEVIATION_FILE = "goodwe-tou-deviation-card.js"
 _FRONTEND_KEY = "__frontend__"
 
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
@@ -194,6 +198,14 @@ SERVICE_GET_ACTIVITY_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_GET_DEVIATIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("limit"): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=MAX_DEVIATION_SIZE)
+        ),
+    }
+)
+
 
 def _coordinators(hass: HomeAssistant) -> list[GoodweTouCoordinator]:
     return [
@@ -224,6 +236,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, f"{_URL_PATH}/{_PLANNER_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_LOG_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_POWER_FILE}")
+        add_extra_js_url(hass, f"{_URL_PATH}/{_DEVIATION_FILE}")
     except Exception:
         _LOGGER.warning(
             "Could not register the GoodWe TOU Lovelace card", exc_info=True
@@ -262,6 +275,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await coordinator.async_load_activity()
     await coordinator.async_load_plan()
+    await coordinator.async_load_deviation()
     await coordinator.async_config_entry_first_refresh()
 
     # The Tibber price sensor has its own 15-minute coordinator so the price card
@@ -435,5 +449,30 @@ def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_GET_ACTIVITY,
             _handle_get_activity,
             schema=SERVICE_GET_ACTIVITY_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_DEVIATIONS):
+
+        async def _handle_get_deviations(
+            call: ServiceCall,
+        ) -> dict[str, Any]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
+            coordinator = coordinators[0]
+            entries = coordinator.deviation(limit=call.data.get("limit"))
+            return {
+                "entries": entries,
+                "count": len(entries),
+                "learned": coordinator.data.get("learned"),
+                "today": coordinator.deviation_summary(),
+            }
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_DEVIATIONS,
+            _handle_get_deviations,
+            schema=SERVICE_GET_DEVIATIONS_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )

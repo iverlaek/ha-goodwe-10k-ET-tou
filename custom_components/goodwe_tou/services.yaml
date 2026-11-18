@@ -458,3 +458,22 @@ get_activity:
           options:
             - ok
             - error
+
+get_deviations:
+  name: Get deviation log
+  description: >-
+    Return the log of deviations between the plan and reality, newest first,
+    together with the house-load model learned from it and today's totals. Each
+    sample has an hour, the actual and planned energy, the deviation, the outdoor
+    and feels-like temperature, the heating degree hours and the PV forecast
+    error. Used by the deviation card.
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of hourly samples to return.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 10000
+          step: 1

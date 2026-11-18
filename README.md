@@ -78,6 +78,19 @@ automate them from scripts, automations and dashboards.
   entries), is exposed as the `sensor.goodwe_time_of_use_activity_log` sensor and
   through the `goodwe_tou.get_activity` service, and is shown by the bundled
   **log card** (`custom:goodwe-tou-log-card`).
+- **Deviation tracking with an adaptive house load.** The planner's assumed
+  house load is compared with what the house really used, hour by hour, and
+  adjusted for the weather: a cold day (the air conditioner working harder) or a
+  bad solar forecast makes the house draw more than planned, which used to drain
+  the battery early. The integration keeps a compact log of the deviation and the
+  variables behind it — outdoor temperature, **feels-like** (apparent)
+  temperature, **heating degree hours** and the PV forecast error — fits a
+  house-load model (`base + temperature term`) from it, and uses that model in the
+  plan once enough hours are in. Only the derived samples are stored (the raw
+  sensor history already lives in Home Assistant's recorder database), so they can
+  be kept for 90 days. See the `sensor.goodwe_time_of_use_afwijking` sensor, the
+  `goodwe_tou.get_deviations` service and the bundled **deviation card**
+  (`custom:goodwe-tou-deviation-card`).
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - **Dutch or English**: chosen at installation and changeable in the options. It
@@ -130,7 +143,10 @@ integration **Configure** dialog. The same dialog holds the planner's boundary
 conditions (see [Cheapest hours](#cheapest-hours)), the language, the window the
 [manual buttons](#manual-charge--discharge) drive (`manual_window`, default `4`)
 and the Tibber price sensor (`tibber_prices`, on by default; `tibber_home` when
-your account has several homes).
+your account has several homes). It also holds the [deviation
+tracking](#deviation-tracking) settings: `adaptive_load`, `weather_entity`,
+`load_entity`, `pv_power_entity`, `temp_coeff`, `degree_base_c` and
+`deviation_size`.
 
 ### Language
 
@@ -170,6 +186,7 @@ With the default device name the entities are:
 | `button.goodwe_time_of_use_manual_discharge` | Make the manual window discharge now |
 | `sensor.goodwe_time_of_use_activity_log` | Activity log: number of writes, newest entries as attributes |
 | `sensor.goodwe_time_of_use_plan` | Last computed plan: number of windows, with `reasons` (per window) and `notes` as attributes |
+| `sensor.goodwe_time_of_use_afwijking` | Deviation log: number of hourly samples, with the learned model, the current assumed load, today's totals and the newest samples as attributes |
 | `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
@@ -408,6 +425,30 @@ sensor: sensor.goodwe_time_of_use_activity_log    # optional, refresh trigger
 limit: 200                                        # optional, entries fetched
 ```
 
+## The deviation card
+
+`custom:goodwe-tou-deviation-card` shows how far reality drifted from the plan,
+and what the integration learned from it. Two panels sit at the top: the **learned
+house load** (base, temperature coefficient, number of samples and how much of the
+spread it explains) with the load the planner assumes **now**, and **today's
+totals** (actual, planned, the deviation, heating degree days, the average
+feels-like temperature and the PV forecast error). Below them is a table of the
+hourly samples: actual and planned energy, the deviation, the outdoor and
+feels-like temperature, the heating degree hours and the PV forecast error. A
+filter narrows the table to **Vandaag** or **Alles**.
+
+Red means the house used **more** than planned (a cost); green means **less** (a
+saving). The card fetches the full log through the `goodwe_tou.get_deviations`
+service and refreshes whenever the deviation sensor changes:
+
+```yaml
+type: custom:goodwe-tou-deviation-card
+title: Afwijking                                  # optional; " (Version x.y.z)" is appended
+prefix: goodwe_time_of_use                        # optional entity-id prefix
+sensor: sensor.goodwe_time_of_use_afwijking       # optional, refresh trigger
+limit: 200                                        # optional, samples fetched
+```
+
 ## Cheapest hours
 
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
@@ -445,6 +486,12 @@ data:
   charge_kw: 6
   discharge_kw: 6
   standby_kw: 1.2
+  adaptive_load: true
+  weather_entity: weather.forecast_home
+  load_entity: sensor.house_consumption
+  pv_power_entity: sensor.pv_power
+  temp_coeff: 0.05
+  degree_base_c: 15.5
   export_hours: 1
   target_soc: 100
   min_soc: 20
@@ -461,7 +508,14 @@ data:
 | `capacity_kwh` | `24` | Usable battery capacity |
 | `charge_kw` | `6` | Maximum charge power (GoodWe limit, AC + DC) |
 | `discharge_kw` | `6` | Maximum discharge power (GoodWe limit over AC) |
-| `standby_kw` | `1.2` | House standby consumption the battery covers in ECO mode |
+| `standby_kw` | `1.2` | House standby consumption the battery covers in ECO mode; with `adaptive_load` on it is the *base* the learned model starts from |
+| `adaptive_load` | `true` | Adjust the assumed house load for the weather and learn it from the deviation log (see [Deviation tracking](#deviation-tracking)) |
+| `weather_entity` | `weather.forecast_home` | Weather entity for the outdoor temperature, humidity and wind; the feels-like temperature is computed from them |
+| `load_entity` | `sensor.house_consumption` | The sensor with the house's real consumption, compared with the plan |
+| `pv_power_entity` | `sensor.pv_power` | PV power sensor, for the forecast-error part of the deviation log |
+| `temp_coeff` | `0.05` | Extra house load (kW) per degree the feels-like temperature is below `degree_base_c`, until the log refines it |
+| `degree_base_c` | `15.5` | Heating degree days are counted below this feels-like temperature |
+| `deviation_size` | `2160` | How many hourly deviation samples to keep (newest first; max `10000`) |
 | `export_hours` | `1` | How long the battery may export at full power **per day** before it is kept for the house; `0` disables the cap |
 | `target_soc` | `100` | Charge up to / discharge down from |
 | `min_soc` | `20` | Stop discharging at |
@@ -568,6 +622,57 @@ Each entry has `time`, `action`, `result` (`ok` / `error`), `error` (or `null`),
 `changes` (a list of `{field, old, new}`) and `windows` (the plan that was
 written, `{n, start, stop, power, days}`). This is what the log card uses.
 
+## Deviation tracking
+
+The planner assumes a constant house load (`standby_kw`). In reality that load
+moves with the weather: a cold day makes the air conditioner work harder, a wrong
+weather forecast means the real load drifts away from the plan, and the battery
+then runs flat earlier than planned. With `adaptive_load` on (the default) the
+integration watches the difference and corrects for it.
+
+Every hour it records one compact sample of the **deviation** between the plan and
+reality, together with the variables that influence it:
+
+| Field | Meaning |
+| --- | --- |
+| `time`, `hours` | The hour the sample covers and how much of it was measured |
+| `actual_kwh`, `planned_kwh`, `deviation_kwh` | What the house used, what the planner assumed, and the difference |
+| `outdoor_temp`, `feels_like` | The outdoor and the computed **feels-like** (apparent) temperature |
+| `degree_hours` | Heating degree hours: how far the feels-like temperature sat below `degree_base_c`, times the hours (`÷ 24` = degree days) |
+| `pv_kwh`, `pv_forecast_kwh`, `pv_error_kwh` | The PV produced, the forecast for that hour and the difference (a large negative value means the weather came out worse than predicted) |
+
+Only these **derived** samples are stored (in `.storage`, newest `deviation_size`
+= 2160 hours ≈ 90 days); the raw temperature, humidity, wind and load history
+already lives in Home Assistant's recorder database, so it is not duplicated. That
+is why the derived samples can be kept much longer than the raw sensor history.
+
+From the log the integration fits a small model of the house load:
+
+```
+house load (kW) = base + temp_coeff × (degrees the feels-like temp is below degree_base_c)
+```
+
+The slope is never negative (cold can only ever *add* load), the coefficients stay
+inside safe bounds, and the fitted line is blended with the configured defaults
+until enough hours have been logged — so a handful of odd hours never move the
+plan on their own. A cold hour therefore makes the planner charge a little more,
+keeping the battery off its floor. Turn `adaptive_load` off to keep the plan on the
+configured `standby_kw` and just log the deviation.
+
+`goodwe_tou.get_deviations` returns the full log (newest first), the learned model
+and today's totals:
+
+```yaml
+action: goodwe_tou.get_deviations
+data:
+  limit: 100        # optional, newest N hourly samples
+response_variable: deviation
+```
+
+The `sensor.goodwe_time_of_use_afwijking` sensor exposes the sample count as its
+state and the learned model (`learned`), the load assumed now (`effective_kw`),
+today's totals (`today`) and the newest samples (`entries`) as attributes.
+
 ## Applying an explicit plan
 
 The `goodwe_tou.set_windows` service writes a list of windows in one verified
@@ -638,9 +743,9 @@ automation:
 A ready-to-paste dashboard is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the live
 power card, the read-only overview, the planner, the Tibber price card, the
-manual charge/discharge buttons and the activity log. Create a dashboard
-(**Settings → Dashboards → Add dashboard → New dashboard from scratch**), open
-the **raw configuration editor** and paste this in:
+manual charge/discharge buttons, the activity log and the deviation log. Create a
+dashboard (**Settings → Dashboards → Add dashboard → New dashboard from scratch**),
+open the **raw configuration editor** and paste this in:
 
 ```yaml
 title: GoodWe TOU
@@ -783,6 +888,11 @@ views:
 
       - type: custom:goodwe-tou-log-card
         title: Logboek
+
+      # How far reality drifted from the plan, with the weather variables behind
+      # it and the house-load model learned from it.
+      - type: custom:goodwe-tou-deviation-card
+        title: Afwijking
 
       - type: entities
         title: Status

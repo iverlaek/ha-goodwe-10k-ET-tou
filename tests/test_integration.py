@@ -20,6 +20,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.goodwe_tou import _recheck_minutes
 from custom_components.goodwe_tou.const import (
+    CONF_ADAPTIVE_LOAD,
     CONF_CHARGE_WINDOWS,
     CONF_DISCHARGE_WINDOWS,
     CONF_LANGUAGE,
@@ -27,6 +28,8 @@ from custom_components.goodwe_tou.const import (
     CONF_MIN_CELL_VOLTAGE,
     CONF_PRICE_SOURCE,
     CONF_RECHECK_MINUTES,
+    CONF_STANDBY_KW,
+    CONF_TEMP_COEFF,
     CONF_TIBBER_PRICES,
     CONF_WINDOW_POWER,
     DOMAIN,
@@ -1531,3 +1534,176 @@ async def test_config_flow_cannot_connect(hass: HomeAssistant):
         )
     assert result["type"] == "form"
     assert result["errors"] == {"base": "cannot_connect"}
+
+
+# -- deviation tracking / adaptive load ------------------------------------
+
+
+def _set_weather(hass: HomeAssistant, temperature: float, humidity: float = 50, wind: float = 0):
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {
+            "temperature": temperature,
+            "temperature_unit": "\u00b0C",
+            "humidity": humidity,
+            "wind_speed": wind,
+            "wind_speed_unit": "km/h",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_creates_a_deviation_sensor(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The deviation sensor is registered and carries the language the cards read."""
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_afwijking")
+    assert sensor is not None
+    assert sensor.state == "0"
+    assert sensor.attributes["language"] == "nl"
+    assert sensor.attributes["today"]["samples"] == 0
+
+
+@pytest.mark.asyncio
+async def test_effective_standby_follows_the_weather(
+    hass: HomeAssistant, store: list[int]
+):
+    """A cold, feels-like hour makes the planner assume a higher house load."""
+    entry = _entry_with_options(
+        hass, **{CONF_STANDBY_KW: 1.2, CONF_TEMP_COEFF: 0.05}
+    )
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    _set_weather(hass, 20.0)
+    assert coordinator.effective_standby_kw() == pytest.approx(1.2)
+
+    _set_weather(hass, 5.0)
+    _, feels, _ = coordinator._weather_now()
+    assert feels is not None
+    assert coordinator.effective_standby_kw() == pytest.approx(
+        1.2 + 0.05 * (15.5 - feels)
+    )
+
+
+@pytest.mark.asyncio
+async def test_adaptive_load_can_be_turned_off(
+    hass: HomeAssistant, store: list[int]
+):
+    """With adaptive_load off the planner keeps the configured standby load."""
+    entry = _entry_with_options(
+        hass,
+        **{
+            CONF_ADAPTIVE_LOAD: False,
+            CONF_STANDBY_KW: 1.2,
+            CONF_TEMP_COEFF: 0.05,
+        },
+    )
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    _set_weather(hass, 2.0)
+    assert coordinator.effective_standby_kw() == pytest.approx(1.2)
+    assert coordinator._learned is None
+
+
+@pytest.mark.asyncio
+async def test_deviation_log_collects_an_hourly_sample(
+    hass: HomeAssistant, store: list[int]
+):
+    """The coordinator integrates one hour of load, weather and PV into a sample."""
+    entry = _entry_with_options(
+        hass, **{CONF_STANDBY_KW: 1.2, CONF_TEMP_COEFF: 0.0}
+    )
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    hass.states.async_set("sensor.house_consumption", "1500")
+    hass.states.async_set("sensor.pv_power", "500")
+    hass.states.async_set("sensor.energy_production_today_remaining", "10")
+    _set_weather(hass, 20.0)
+
+    t0 = dt.datetime(2026, 11, 17, 3, 0, tzinfo=dt.UTC)
+    coordinator._sample_deviation(t0)  # opens the 03:00 bucket
+    coordinator._sample_deviation(t0 + dt.timedelta(minutes=30))  # half an hour
+    hass.states.async_set("sensor.energy_production_today_remaining", "9")
+    coordinator._sample_deviation(t0 + dt.timedelta(hours=1))  # rolls the hour
+
+    entries = coordinator.deviation()
+    assert len(entries) == 1
+    sample = entries[0]
+    assert sample["time"] == "2026-11-17T03:00+00:00"
+    assert sample["hours"] == pytest.approx(0.5)
+    assert sample["actual_kwh"] == pytest.approx(0.75)  # 1.5 kW * 0.5 h
+    assert sample["planned_kwh"] == pytest.approx(0.6)  # 1.2 kW * 0.5 h
+    assert sample["deviation_kwh"] == pytest.approx(0.15)
+    assert sample["outdoor_temp"] == pytest.approx(20.0)
+    assert sample["pv_kwh"] == pytest.approx(0.25)  # 0.5 kW * 0.5 h
+    assert sample["pv_forecast_kwh"] == pytest.approx(1.0)  # 10 - 9
+
+    # The full log is available through the service ...
+    response = await hass.services.async_call(
+        DOMAIN, "get_deviations", {}, blocking=True, return_response=True
+    )
+    assert response["count"] == 1
+    assert response["entries"][0]["time"] == "2026-11-17T03:00+00:00"
+
+    # ... and the sensor exposes the newest samples as an attribute.
+    coordinator._publish(coordinator.data)
+    sensor = hass.states.get("sensor.goodwe_time_of_use_afwijking")
+    assert sensor.state == "1"
+    assert sensor.attributes["entries"][0]["time"] == "2026-11-17T03:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_deviation_log_learns_a_house_load_model(
+    hass: HomeAssistant, store: list[int]
+):
+    """Enough clean samples give the planner its own base load and slope."""
+    entry = _entry_with_options(
+        hass, **{CONF_STANDBY_KW: 1.2, CONF_TEMP_COEFF: 0.05}
+    )
+    with patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    # 48 perfect hourly samples: 1.0 kW base plus 0.1 kW per degree.
+    coordinator._deviation = [
+        {"hours": 1.0, "degree_hours": float(d), "actual_kwh": 1.0 + 0.1 * d}
+        for d in range(48)
+    ]
+    coordinator._recompute_learned()
+
+    learned = coordinator._learned
+    assert learned is not None
+    assert learned["samples"] == 48
+    assert learned["base_kw"] == pytest.approx(1.0)
+    assert learned["temp_coeff"] == pytest.approx(0.1)
+
+    # The learned model now drives the assumed load ...
+    _set_weather(hass, 20.0)
+    assert coordinator.effective_standby_kw() == pytest.approx(1.0)
+    _set_weather(hass, 5.0)
+    _, feels, _ = coordinator._weather_now()
+    assert coordinator.effective_standby_kw() == pytest.approx(
+        1.0 + 0.1 * (15.5 - feels)
+    )
+
+    # ... unless a plan pins standby_kw explicitly.
+    assert coordinator._standby_setting({CONF_STANDBY_KW: 3.0}) == pytest.approx(3.0)
+    assert coordinator._standby_setting({}) == pytest.approx(
+        coordinator.effective_standby_kw()
+    )

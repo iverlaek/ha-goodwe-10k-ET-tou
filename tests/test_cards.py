@@ -22,6 +22,7 @@ _CARDS = {
     "goodwe-tou-planner-card.js": "goodwe-tou-planner-card",
     "goodwe-tou-log-card.js": "goodwe-tou-log-card",
     "goodwe-tou-power-card.js": "goodwe-tou-power-card",
+    "goodwe-tou-deviation-card.js": "goodwe-tou-deviation-card",
 }
 
 
@@ -59,3 +60,14 @@ def test_power_card_defaults() -> None:
     big = re.search(r"const BIG = (\d+);", text)
     assert small and big
     assert int(big.group(1)) == int(small.group(1)) * 3 // 2
+
+
+def test_deviation_card_reads_the_deviation_service() -> None:
+    text = (_WWW / "goodwe-tou-deviation-card.js").read_text(encoding="utf-8")
+    # The full log is fetched through the integration's own service.
+    assert '"get_deviations"' in text
+    # The refresh trigger is the deviation sensor (`<prefix>_afwijking`).
+    assert "_afwijking" in text
+    # It shows the learned model and today's totals.
+    assert "effective_kw" in text
+    assert "temp_coeff" in text
