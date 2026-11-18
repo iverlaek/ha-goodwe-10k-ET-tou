@@ -116,11 +116,12 @@ automate them from scripts, automations and dashboards.
   / `goodwe_tou.refresh_profile` services and the bundled **profile card**
   (`custom:goodwe-tou-profile-card`).
 - A **cost card** (`custom:goodwe-tou-cost-card`) that prices today's actual
-  import and export from the P1 meter at the quarter-hour market prices and adds
-  the predicted cost of the rest of the day. Large battery and grid symbols show
-  live charging (red), discharging (green), importing (purple) and exporting
-  (blue). Edit one of the four planner windows and it shows a green check when
-  the change is cheaper, or a red cross when the predicted cost goes up.
+  import and export **only from the P1 meter** (lifetime totals or the high/low
+  tariff counters) at the all-in quarter-hour prices and adds the predicted
+  cost of the rest of the day. Large battery and grid symbols show live
+  charging (red), discharging (green), importing (purple) and exporting (blue).
+  Edit one of the four planner windows and it shows a green check when the
+  change is cheaper, or a red cross when the predicted cost goes up.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - **Dutch or English**: chosen at installation and changeable in the options. It
@@ -548,12 +549,24 @@ integration refreshes it at setup and every six hours.
 
 `custom:goodwe-tou-cost-card` answers two questions at a glance:
 
-- **Nu al gebruikt** — what today's electricity has cost so far. The card reads
-  the P1 meter's import and export totals from Home Assistant's long-term
-  statistics, so it works even when the dashboard was not open at midnight. The
-  kWh are spread over the elapsed quarter hours with the measured consumption
-  profile (the same shape the planner uses), so each quarter hour gets its own
-  market price instead of one daily average.
+- **Nu al gebruikt** — what today's electricity has cost so far. The **P1 meter
+  is the only source of truth** for import and export: the card reads its
+  lifetime totals from Home Assistant's long-term statistics (or sums the
+  high/low `tariff_1` / `tariff_2` counters), so it works even when the
+  dashboard was not open at midnight. If the statistics are unavailable it
+  subtracts the midnight totals read from the history API; it never falls back
+  to the inverter's own `today_energy_*` counters, which measure something else.
+  The kWh are spread over the elapsed quarter hours with the measured
+  consumption profile (the same shape the planner uses), so each quarter hour
+  gets its own price instead of one daily average.
+- The imported kWh are priced **all-in**: the integration's Tibber price sensor
+  (`sensor.goodwe_time_of_use_stroomprijzen`) carries the quarter-hour prices
+  including energy tax and VAT, so the card's euros match the Tibber app. While
+  that forecast is still empty (for example just after a restart) the card adds
+  the measured taxes/fees to the wholesale prices, derived from
+  `all_in_average_entity`'s `avg_price`; `import_price_adder` overrides it.
+  Exported kWh are credited at the wholesale price, because the taxes are not
+  paid back on feed-in.
 - **Verwacht totaal vandaag** — that cost so far plus the predicted cost of the
   remaining quarter hours. The prediction starts from the measured import/export
   profile, scaled to the energy actually used today, and adds the effect of the
@@ -584,9 +597,10 @@ type: custom:goodwe-tou-cost-card
 title: Elektriciteitskosten                     # optional
 import_entity: sensor.p1_meter_energy_import
 export_entity: sensor.p1_meter_energy_export
-today_import_entity: sensor.today_energy_import # fallback without P1 statistics
-today_export_entity: sensor.today_energy_export
-price_entity: sensor.average_electricity_price
+price_entity: sensor.average_electricity_price  # wholesale market prices
+all_in_price_entity: sensor.goodwe_time_of_use_stroomprijzen
+all_in_average_entity: sensor.akkerv5_electricity_price
+import_price_adder: 0.16                        # optional, €/kWh taxes/fees
 profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
 soc_entity: sensor.battery_state_of_charge
 battery_power_entity: sensor.battery_power      # + discharging, - charging
@@ -947,9 +961,9 @@ views:
         title: Elektriciteitskosten
         import_entity: sensor.p1_meter_energy_import
         export_entity: sensor.p1_meter_energy_export
-        today_import_entity: sensor.today_energy_import
-        today_export_entity: sensor.today_energy_export
         price_entity: sensor.average_electricity_price
+        all_in_price_entity: sensor.goodwe_time_of_use_stroomprijzen
+        all_in_average_entity: sensor.akkerv5_electricity_price
         profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
         soc_entity: sensor.battery_state_of_charge
         capacity_kwh: 24
@@ -1021,8 +1035,8 @@ views:
         battery_power_entity: sensor.battery_power
         invert_battery_power: true
         battery_capacity: 24
-        import_history_entity: sensor.today_energy_import
-        export_history_entity: sensor.today_energy_export
+        import_history_entity: sensor.p1_meter_energy_import
+        export_history_entity: sensor.p1_meter_energy_export
         production_history_entity: sensor.energy_production_today
         show_header: true
         header_title: Solar

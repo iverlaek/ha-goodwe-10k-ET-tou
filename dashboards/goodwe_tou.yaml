@@ -21,9 +21,11 @@ views:
         title: Elektriciteitskosten
         import_entity: sensor.p1_meter_energy_import
         export_entity: sensor.p1_meter_energy_export
-        today_import_entity: sensor.today_energy_import
-        today_export_entity: sensor.today_energy_export
         price_entity: sensor.average_electricity_price
+        # All-in quarter-hour prices from the integration's Tibber sensor; the
+        # average entity supplies the taxes/fees adder while it is still empty.
+        all_in_price_entity: sensor.goodwe_time_of_use_stroomprijzen
+        all_in_average_entity: sensor.akkerv5_electricity_price
         profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
         soc_entity: sensor.battery_state_of_charge
         capacity_kwh: 24
@@ -101,8 +103,8 @@ views:
         battery_power_entity: sensor.battery_power
         invert_battery_power: true
         battery_capacity: 24
-        import_history_entity: sensor.today_energy_import
-        export_history_entity: sensor.today_energy_export
+        import_history_entity: sensor.p1_meter_energy_import
+        export_history_entity: sensor.p1_meter_energy_export
         production_history_entity: sensor.energy_production_today
         show_header: true
         header_title: Solar

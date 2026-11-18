@@ -5,12 +5,14 @@
  *
  * It shows two numbers:
  *
- *   - what the electricity used today has cost so far. The P1 meter's import
- *     and export totals are read from Home Assistant's long-term statistics,
- *     so the card also works when it was not open since midnight. The kWh are
+ *   - what the electricity used today has cost so far. The P1 meter is the only
+ *     source for import and export: its lifetime totals (or the high/low
+ *     tariff counters) are read from Home Assistant's long-term statistics, so
+ *     the card also works when it was not open since midnight. The kWh are
  *     spread over the elapsed quarter hours with the measured consumption
  *     profile (the same shape the planner uses), so every quarter hour is
- *     priced at its own market price;
+ *     priced at its own all-in price (Tibber forecast, else wholesale plus the
+ *     measured taxes/fees);
  *   - the expected total for today: the cost so far plus the predicted cost of
  *     the remaining quarter hours. The prediction starts from the measured
  *     import/export profile and is scaled to the energy actually used so far.
@@ -32,9 +34,10 @@
  *   prefix: goodwe_time_of_use                    # optional entity-id prefix
  *   import_entity: sensor.p1_meter_energy_import
  *   export_entity: sensor.p1_meter_energy_export
- *   today_import_entity: sensor.today_energy_import   # fallback when there is
- *   today_export_entity: sensor.today_energy_export   # no P1 statistics
- *   price_entity: sensor.average_electricity_price
+ *   price_entity: sensor.average_electricity_price       # wholesale market
+ *   all_in_price_entity: sensor.goodwe_time_of_use_stroomprijzen
+ *   all_in_average_entity: sensor.akkerv5_electricity_price
+ *   import_price_adder: 0.16                            # €/kWh taxes, optional
  *   profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
  *   soc_entity: sensor.battery_state_of_charge
  *   capacity_kwh: 24
@@ -50,16 +53,16 @@
  *   power_idle_w: 25                              # below this the icon is grey
  */
 
-const CARD_VERSION = "1.11.0";
+const CARD_VERSION = "1.12.0";
 
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const PRICE_DEFAULT = "sensor.average_electricity_price";
 const PROFILE_DEFAULT = "sensor.goodwe_time_of_use_verbruiksprofiel";
 const IMPORT_DEFAULT = "sensor.p1_meter_energy_import";
 const EXPORT_DEFAULT = "sensor.p1_meter_energy_export";
-const TODAY_IMPORT_DEFAULT = "sensor.today_energy_import";
-const TODAY_EXPORT_DEFAULT = "sensor.today_energy_export";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
+//: The high/low tariff children some P1 integrations expose next to the total.
+const TARIFF_SUFFIXES = ["tariff_1", "tariff_2"];
 const BATTERY_POWER_DEFAULT = "sensor.battery_power";
 const GRID_POWER_DEFAULT = "sensor.meter_active_power_total";
 
@@ -84,6 +87,7 @@ const LANGS = {
     worse: "{delta} duurder",
     price: "Huidige prijs {price}/kWh",
     avgRest: "gemiddeld rest {price}/kWh",
+    taxes: "incl. {value}/kWh heffingen",
     noData: "geen gegevens",
     loading: "kosten laden…",
     trendTitle: "Effect van de laatste wijziging in de vensters",
@@ -108,6 +112,7 @@ const LANGS = {
     worse: "{delta} more expensive",
     price: "Current price {price}/kWh",
     avgRest: "average rest {price}/kWh",
+    taxes: "incl. {value}/kWh taxes & fees",
     noData: "no data",
     loading: "loading cost…",
     trendTitle: "Effect of the last change to the windows",
@@ -220,11 +225,12 @@ class GoodweTouCostCard extends HTMLElement {
 
     this._prefix = PREFIX_DEFAULT;
     this._priceEntity = PRICE_DEFAULT;
+    this._allInPriceEntity = null;
+    this._allInAverageEntity = null;
+    this._importAdderOverride = null;
     this._profileEntity = PROFILE_DEFAULT;
     this._importEntity = IMPORT_DEFAULT;
     this._exportEntity = EXPORT_DEFAULT;
-    this._todayImportEntity = TODAY_IMPORT_DEFAULT;
-    this._todayExportEntity = TODAY_EXPORT_DEFAULT;
     this._socEntity = SOC_DEFAULT;
     this._batteryPowerEntity = BATTERY_POWER_DEFAULT;
     this._gridPowerEntity = GRID_POWER_DEFAULT;
@@ -241,7 +247,12 @@ class GoodweTouCostCard extends HTMLElement {
 
     this._prices = new Map();
     this._priceValues = [];
+    this._priceTodayValues = [];
     this._priceSig = null;
+    this._allInPrices = new Map();
+    this._allInTodayValues = [];
+    this._allInSig = null;
+    this._allInAverage = null;
     this._profile = { load: [], import: [], export: [] };
     this._profileSig = null;
 
@@ -284,13 +295,18 @@ class GoodweTouCostCard extends HTMLElement {
     this._prefix = this._config.prefix || PREFIX_DEFAULT;
 
     this._priceEntity = this._config.price_entity || PRICE_DEFAULT;
+    // The integration's own Tibber sensor carries the all-in (tax included)
+    // quarter-hour prices. Set `all_in_price_entity: false` to price only the
+    // wholesale market.
+    const allIn = this._config.all_in_price_entity;
+    this._allInPriceEntity =
+      allIn === false
+        ? null
+        : allIn || `sensor.${this._prefix}_stroomprijzen`;
+    this._allInAverageEntity = this._config.all_in_average_entity || null;
     this._profileEntity = this._config.profile_entity || PROFILE_DEFAULT;
     this._importEntity = this._config.import_entity || IMPORT_DEFAULT;
     this._exportEntity = this._config.export_entity || EXPORT_DEFAULT;
-    this._todayImportEntity =
-      this._config.today_import_entity || TODAY_IMPORT_DEFAULT;
-    this._todayExportEntity =
-      this._config.today_export_entity || TODAY_EXPORT_DEFAULT;
     this._socEntity = this._config.soc_entity || SOC_DEFAULT;
     this._batteryPowerEntity =
       this._config.battery_power_entity || BATTERY_POWER_DEFAULT;
@@ -309,6 +325,11 @@ class GoodweTouCostCard extends HTMLElement {
     this._rte = number(this._config.rte, 0.85, 0.1, 1);
     this._slotMinutes = number(this._config.slot_minutes, 15, 1, 60);
     this._idleW = number(this._config.power_idle_w, 25, 0, 5000);
+    const adder = this._config.import_price_adder;
+    this._importAdderOverride =
+      adder === undefined || adder === null || adder === ""
+        ? null
+        : number(adder, 0, 0, 1);
 
     this._built = false;
     if (this._hass) this._build();
@@ -325,6 +346,7 @@ class GoodweTouCostCard extends HTMLElement {
     if (!this._built) return;
 
     this._readPrices();
+    this._readAllInPrices();
     this._readProfile();
     this._syncWindows();
     this._refreshEnergy();
@@ -447,6 +469,8 @@ class GoodweTouCostCard extends HTMLElement {
 
     const map = new Map();
     const values = [];
+    const todayValues = [];
+    const todayKey = localDateKey(new Date());
     for (const slot of list) {
       if (!slot || slot.time === undefined) continue;
       const when = new Date(slot.time);
@@ -455,9 +479,102 @@ class GoodweTouCostCard extends HTMLElement {
       const index = Math.floor(minutesOfDay(when) / this._slotMinutes);
       map.set(`${localDateKey(when)}|${index}`, price);
       values.push(price);
+      if (localDateKey(when) === todayKey) todayValues.push(price);
     }
     this._prices = map;
     this._priceValues = values;
+    this._priceTodayValues = todayValues;
+  }
+
+  // The Tibber prices from the integration are all-in (incl. energy tax and
+  // VAT). When that forecast is available it prices every imported kWh exactly;
+  // otherwise the wholesale prices get the measured taxes/fees adder.
+  _readAllInPrices() {
+    const state = this._allInPriceEntity
+      ? this._state(this._allInPriceEntity)
+      : undefined;
+    if (state) {
+      const sig = state.last_updated || state.last_changed || "";
+      if (sig !== this._allInSig) {
+        this._allInSig = sig;
+        const attrs = state.attributes || {};
+        let list = Array.isArray(attrs.prices) ? attrs.prices : null;
+        if (!list) {
+          const today = Array.isArray(attrs.prices_today) ? attrs.prices_today : [];
+          const tomorrow = Array.isArray(attrs.prices_tomorrow)
+            ? attrs.prices_tomorrow
+            : [];
+          list = [...today, ...tomorrow];
+        }
+        const map = new Map();
+        const todayValues = [];
+        const todayKey = localDateKey(new Date());
+        for (const slot of list) {
+          if (!slot || slot.time === undefined) continue;
+          const when = new Date(slot.time);
+          const price = Number(slot.price);
+          if (!Number.isFinite(when.getTime()) || !Number.isFinite(price)) {
+            continue;
+          }
+          const index = Math.floor(minutesOfDay(when) / this._slotMinutes);
+          map.set(`${localDateKey(when)}|${index}`, price);
+          if (localDateKey(when) === todayKey) todayValues.push(price);
+        }
+        this._allInPrices = map;
+        this._allInTodayValues = todayValues;
+      }
+    } else {
+      this._allInPrices = new Map();
+      this._allInTodayValues = [];
+    }
+
+    // The Tibber price sensor also carries today's average all-in price. That
+    // is the fallback adder while the quarter-hour list is still empty (for
+    // example right after a restart, before the price coordinator has run).
+    this._allInAverage = null;
+    if (this._allInAverageEntity) {
+      const averageState = this._state(this._allInAverageEntity);
+      const attrs = averageState ? averageState.attributes || {} : {};
+      const average = Number(attrs.avg_price);
+      if (Number.isFinite(average)) this._allInAverage = average;
+    }
+  }
+
+  _average(values) {
+    if (!values || !values.length) return null;
+    return values.reduce((a, b) => a + b, 0) / values.length;
+  }
+
+  // €/kWh between the all-in retail price and the wholesale market price. This
+  // is what makes the card's euros match the Tibber app: the P1 kWh are real,
+  // but they are bought at the all-in tariff, not at the bare market price.
+  importAdder() {
+    if (this._importAdderOverride !== null) return this._importAdderOverride;
+    const market = this._average(this._priceTodayValues);
+    if (market === null) return 0;
+    const allIn = this._average(this._allInTodayValues);
+    if (allIn !== null) return clamp(allIn - market, 0, 1);
+    if (this._allInAverage !== null) {
+      return clamp(this._allInAverage - market, 0, 1);
+    }
+    return 0;
+  }
+
+  _allInPriceAt(date) {
+    const index = Math.floor(minutesOfDay(date) / this._slotMinutes);
+    return this._allInPrices.get(`${localDateKey(date)}|${index}`);
+  }
+
+  _importPriceAt(date) {
+    const allIn = this._allInPriceAt(date);
+    if (allIn !== undefined) return allIn;
+    return this._priceAt(date) + this.importAdder();
+  }
+
+  // Feed-in is paid at the wholesale price; the retail taxes and fees are not
+  // earned back on exported kWh.
+  _exportPriceAt(date) {
+    return this._priceAt(date);
   }
 
   _readProfile() {
@@ -630,19 +747,18 @@ class GoodweTouCostCard extends HTMLElement {
       if (hours <= 0) break;
 
       const minutes = minutesOfDay(from);
-      const price = this._priceAt(slotStart);
       const window = windows.find((candidate) =>
         this._windowActive(candidate, from, minutes)
       );
       if (window && window.power < 0) {
         const energy = this._chargeKw * (Math.abs(window.power) / 100) * hours;
         soc = Math.min(this._usableKwh(), soc + energy * this._rte);
-        cost += energy * (price + this._batteryCost);
+        cost += energy * (this._importPriceAt(slotStart) + this._batteryCost);
       } else if (window && window.power > 0) {
         const wanted = this._dischargeKw * (window.power / 100) * hours;
         const actual = Math.min(wanted, soc);
         soc = Math.max(0, soc - actual);
-        cost -= actual * price;
+        cost -= actual * this._exportPriceAt(slotStart);
       }
 
       cursor = slotEnd;
@@ -692,7 +808,12 @@ class GoodweTouCostCard extends HTMLElement {
     };
 
     if (typeof this._hass.callWS !== "function") {
-      this._energyFromTodayCounters(key, now);
+      finish();
+      return;
+    }
+
+    const statisticIds = this._energyStatisticIds();
+    if (!statisticIds.length) {
       finish();
       return;
     }
@@ -702,27 +823,13 @@ class GoodweTouCostCard extends HTMLElement {
         type: "recorder/statistics_during_period",
         start_time: midnight.toISOString(),
         end_time: now.toISOString(),
-        statistic_ids: [this._importEntity, this._exportEntity],
+        statistic_ids: statisticIds,
         period: "day",
         types: ["change"],
       })
       .then((result) => {
-        let importKwh = null;
-        let exportKwh = null;
-        for (const [entityId, rows] of Object.entries(result || {})) {
-          let sum = 0;
-          let found = false;
-          for (const row of Array.isArray(rows) ? rows : []) {
-            const change = Number(row && row.change);
-            if (Number.isFinite(change)) {
-              sum += change;
-              found = true;
-            }
-          }
-          if (!found) continue;
-          if (entityId === this._importEntity) importKwh = sum;
-          if (entityId === this._exportEntity) exportKwh = sum;
-        }
+        const importKwh = this._sideKwh(result, this._importEntity);
+        const exportKwh = this._sideKwh(result, this._exportEntity);
         if (importKwh === null && exportKwh === null) {
           throw new Error("no P1 statistics");
         }
@@ -731,26 +838,141 @@ class GoodweTouCostCard extends HTMLElement {
           exportKwh: exportKwh ?? 0,
           key,
           at: Date.now(),
-          source: "p1",
+          source: "p1-statistics",
         };
       })
-      .catch(() => {
-        this._energyFromTodayCounters(key, now);
-      })
+      .catch(() => this._energyFromP1Totals(key, now))
       .finally(finish);
   }
 
-  _energyFromTodayCounters(key, now) {
-    const importKwh = this._num(this._todayImportEntity);
-    const exportKwh = this._num(this._todayExportEntity);
-    if (importKwh === null && exportKwh === null) return;
-    this._energy = {
-      importKwh: importKwh ?? 0,
-      exportKwh: exportKwh ?? 0,
-      key,
-      at: Date.now(),
-      source: "today",
-    };
+  // The P1 lifetime totals and their high/low tariff children are the only
+  // valid source for import and export. Never fall back to the inverter's
+  // "today" counters: those measure something else and made the cost far too
+  // low.
+  _energyStatisticIds() {
+    const ids = [];
+    for (const entity of [this._importEntity, this._exportEntity]) {
+      if (!entity) continue;
+      ids.push(entity);
+      for (const suffix of TARIFF_SUFFIXES) {
+        const child = `${entity}_${suffix}`;
+        if (this._state(child)) ids.push(child);
+      }
+    }
+    return Array.from(new Set(ids));
+  }
+
+  _sumChanges(result, entityId) {
+    const rows = result ? result[entityId] : undefined;
+    let sum = 0;
+    let found = false;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const change = Number(row && row.change);
+      if (Number.isFinite(change)) {
+        sum += change;
+        found = true;
+      }
+    }
+    return found ? sum : null;
+  }
+
+  // A single side can be a total or the sum of its high/low tariffs, whichever
+  // the P1 integration and the recorder provide.
+  _sideKwh(result, entity) {
+    const total = this._sumChanges(result, entity);
+    if (total !== null) return total;
+    let sum = 0;
+    let found = false;
+    for (const suffix of TARIFF_SUFFIXES) {
+      const value = this._sumChanges(result, `${entity}_${suffix}`);
+      if (value !== null) {
+        sum += value;
+        found = true;
+      }
+    }
+    return found ? sum : null;
+  }
+
+  _lifetimeValue(map, entityId) {
+    const rows = map ? map[entityId] : undefined;
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const first = rows[0] || {};
+    const value = Number(first.state !== undefined ? first.state : first.s);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  _lifetimeSide(map, entity) {
+    const total = this._lifetimeValue(map, entity);
+    if (total !== null) return total;
+    let sum = 0;
+    let found = false;
+    for (const suffix of TARIFF_SUFFIXES) {
+      const value = this._lifetimeValue(map, `${entity}_${suffix}`);
+      if (value !== null) {
+        sum += value;
+        found = true;
+      }
+    }
+    return found ? sum : null;
+  }
+
+  // Fallback when the statistics are unavailable: the current P1 lifetime
+  // totals minus the totals at midnight, read from the history API. Still P1
+  // only, so the number stays honest. When that also fails the card shows
+  // "no data" instead of inventing a value.
+  _energyFromP1Totals(key, now) {
+    if (typeof this._hass.callWS !== "function") return Promise.resolve();
+    // Same totals-or-tariffs logic as the statistics path, so a P1 integration
+    // that only exposes the high/low counters also works here.
+    const entityIds = this._energyStatisticIds();
+    if (!entityIds.length) return Promise.resolve();
+    const currentRows = {};
+    for (const entity of entityIds) {
+      const value = this._num(entity);
+      if (value !== null) currentRows[entity] = [{ state: value }];
+    }
+    const currentSide = (entity) => this._lifetimeSide(currentRows, entity);
+    if (
+      currentSide(this._importEntity) === null &&
+      currentSide(this._exportEntity) === null
+    ) {
+      return Promise.resolve();
+    }
+
+    const midnight = startOfDay(now);
+    return this._hass
+      .callWS({
+        type: "history/history_during_period",
+        start_time: midnight.toISOString(),
+        end_time: now.toISOString(),
+        entity_ids: entityIds,
+        include_start_time_state: true,
+        significant_changes_only: false,
+        minimal_response: true,
+        no_attributes: true,
+      })
+      .then((result) => {
+        const today = (entity) => {
+          const nowValue = currentSide(entity);
+          const baseValue = this._lifetimeSide(result, entity);
+          if (nowValue === null || baseValue === null) return null;
+          return Math.max(0, nowValue - baseValue);
+        };
+        const importKwh = today(this._importEntity);
+        const exportKwh = today(this._exportEntity);
+        if (importKwh === null && exportKwh === null) return;
+        this._energy = {
+          importKwh: importKwh ?? 0,
+          exportKwh: exportKwh ?? 0,
+          key,
+          at: Date.now(),
+          source: "p1-history",
+        };
+      })
+      .catch(() => {
+        // Leave the energy empty; the card shows "no data" rather than a
+        // number from a counter that is not the P1 meter.
+      });
   }
 
   // -- cost model --------------------------------------------------------
@@ -831,10 +1053,10 @@ class GoodweTouCostCard extends HTMLElement {
 
     let cost = 0;
     for (const [at, energy] of importBySlot) {
-      cost += energy * this._priceAt(at);
+      cost += energy * this._importPriceAt(at);
     }
     for (const [at, energy] of exportBySlot) {
-      cost -= energy * this._priceAt(at);
+      cost -= energy * this._exportPriceAt(at);
     }
     return {
       cost,
@@ -878,7 +1100,6 @@ class GoodweTouCostCard extends HTMLElement {
       const hours = Math.max(0, slotEnd - from) / 3_600_000;
       if (hours <= 0) break;
       const index = this._profileIndex(slotStart);
-      const price = this._priceAt(slotStart);
       let importKwh;
       let exportKwh;
       if (importSeries.length || exportSeries.length) {
@@ -888,7 +1109,9 @@ class GoodweTouCostCard extends HTMLElement {
         importKwh = 0;
         exportKwh = 0;
       }
-      cost += (importKwh - exportKwh) * price;
+      cost +=
+        importKwh * this._importPriceAt(slotStart) -
+        exportKwh * this._exportPriceAt(slotStart);
       cursor = slotEnd;
     }
     return cost;
@@ -905,7 +1128,6 @@ class GoodweTouCostCard extends HTMLElement {
     const predictedRemaining = remaining + (windowsNow - reference);
     const total = (used ? used.cost : 0) + predictedRemaining;
 
-    let currentPrice = null;
     const currentSlot = new Date(
       now.getFullYear(),
       now.getMonth(),
@@ -915,15 +1137,11 @@ class GoodweTouCostCard extends HTMLElement {
       0,
       0
     );
-    const exact = this._prices.get(
-      `${localDateKey(currentSlot)}|${Math.floor(
-        minutesOfDay(currentSlot) / this._slotMinutes
-      )}`
-    );
-    if (exact !== undefined) currentPrice = exact;
-    const averagePrice = this._priceValues.length
-      ? this._priceValues.reduce((a, b) => a + b, 0) / this._priceValues.length
-      : null;
+    const currentPrice =
+      this._prices.size || this._allInPrices.size
+        ? this._importPriceAt(currentSlot)
+        : null;
+    const averagePrice = this._averageRestImportPrice(now);
 
     return {
       now,
@@ -932,7 +1150,34 @@ class GoodweTouCostCard extends HTMLElement {
       predictedRemaining,
       currentPrice,
       averagePrice,
+      importAdder: this.importAdder(),
     };
+  }
+
+  _averageRestImportPrice(now) {
+    const end = addDays(startOfDay(now), 1);
+    let sum = 0;
+    let count = 0;
+    let cursor = new Date(now);
+    while (cursor < end) {
+      const slotStart = new Date(
+        cursor.getFullYear(),
+        cursor.getMonth(),
+        cursor.getDate(),
+        cursor.getHours(),
+        Math.floor(cursor.getMinutes() / this._slotMinutes) * this._slotMinutes,
+        0,
+        0
+      );
+      sum += this._importPriceAt(slotStart);
+      count += 1;
+      const next = new Date(
+        slotStart.getTime() + this._slotMinutes * 60_000
+      );
+      if (next <= cursor) break;
+      cursor = next;
+    }
+    return count ? sum / count : null;
   }
 
   // -- construction ------------------------------------------------------
@@ -1015,7 +1260,11 @@ class GoodweTouCostCard extends HTMLElement {
       this._energy.importKwh,
       this._energy.exportKwh,
       this._energy.at,
+      this._energy.source,
       this._priceSig,
+      this._allInSig,
+      this._priceTodayValues.length,
+      this.importAdder().toFixed(4),
       this._profileSig,
       this._windowsKey(this._windows),
       this._socKwh().toFixed(3),
@@ -1085,6 +1334,9 @@ class GoodweTouCostCard extends HTMLElement {
     }
     if (data.averagePrice !== null) {
       parts.push(this._t("avgRest", this._formatEuro(data.averagePrice)));
+    }
+    if (data.importAdder > 0.0005) {
+      parts.push(this._t("taxes", this._formatEuro(data.importAdder)));
     }
     foot.innerHTML = parts
       .map((part) => `<span>${this._escape(part)}</span>`)

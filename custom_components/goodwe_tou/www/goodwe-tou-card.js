@@ -25,7 +25,7 @@
  *   language: en                                  # optional, overrides the language
  */
 
-const CARD_VERSION = "1.11.0";
+const CARD_VERSION = "1.12.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
 const HOURS_BACK_DEFAULT = 24;

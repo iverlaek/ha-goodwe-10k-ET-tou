@@ -144,6 +144,38 @@ def test_cost_card_prices_the_p1_meter_and_listens_for_planner_edits() -> None:
     assert 'worse: "{delta} duurder"' in text
 
 
+def test_cost_card_uses_only_the_p1_meter_for_energy() -> None:
+    """Import/export always come from the P1 totals or their tariff children."""
+    text = (_WWW / "goodwe-tou-cost-card.js").read_text(encoding="utf-8")
+    # The inverter's own today counters must never drive the cost.
+    assert "today_energy_import" not in text
+    assert "today_energy_export" not in text
+    assert "_energyFromTodayCounters" not in text
+    # A total that has no statistics can be rebuilt from high/low tariffs.
+    assert 'TARIFF_SUFFIXES = ["tariff_1", "tariff_2"]' in text
+    assert "_sideKwh" in text
+    assert "_energyStatisticIds" in text
+    # Last resort is the P1 lifetime total minus its midnight history value.
+    assert "history/history_during_period" in text
+    assert "_energyFromP1Totals" in text
+
+
+def test_cost_card_prices_imports_all_in_and_exports_wholesale() -> None:
+    """Taxes and fees are added to imports, not earned back on exports."""
+    text = (_WWW / "goodwe-tou-cost-card.js").read_text(encoding="utf-8")
+    assert "all_in_price_entity" in text
+    assert "all_in_average_entity" in text
+    assert "import_price_adder" in text
+    assert "_importPriceAt" in text
+    assert "_exportPriceAt" in text
+    assert "importAdder" in text
+    # Priced all-in when the Tibber forecast exists, else market + adder.
+    assert "this._priceAt(date) + this.importAdder()" in text
+    assert "return this._priceAt(date);" in text
+    assert 'taxes: "incl. {value}/kWh heffingen"' in text
+    assert 'taxes: "incl. {value}/kWh taxes & fees"' in text
+
+
 def test_planner_card_notifies_the_cost_card_of_window_edits() -> None:
     """Planner edits are visible to the cost card before Toepassen."""
     text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
@@ -162,6 +194,12 @@ def test_dashboard_opens_with_the_cost_card() -> None:
     assert text.index("custom:goodwe-tou-cost-card", first_card) < text.index(
         "custom:goodwe-tou-card", first_card
     )
+    # The cost card prices imports all-in; the solar bar reads P1 history.
+    assert "all_in_average_entity: sensor.akkerv5_electricity_price" in text
+    assert "import_history_entity: sensor.p1_meter_energy_import" in text
+    assert "export_history_entity: sensor.p1_meter_energy_export" in text
+    assert "today_import_entity" not in text
+    assert "import_history_entity: sensor.today_energy_import" not in text
 
 
 def test_cost_card_shows_large_battery_and_grid_direction_symbols() -> None:
