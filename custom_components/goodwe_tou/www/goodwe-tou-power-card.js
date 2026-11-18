@@ -33,7 +33,7 @@
  * (``sensor.p1_meter_power``).
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.4.1";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const GRID_DEFAULT = "sensor.meter_active_power_total";

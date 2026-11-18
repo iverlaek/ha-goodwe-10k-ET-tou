@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
@@ -141,10 +142,27 @@ _READ_ATTEMPTS = 3
 #: older GoodWe Wi-Fi dongle is easily overloaded, so hammering it back-to-back
 #: only makes things worse; a short pause lets it recover.
 _RETRY_DELAY = 2.0
-#: Seconds between the delayed re-sends of a write that failed completely. A
-#: failed write is re-sent until the inverter confirms it, so the log ends on a
-#: success instead of a stale failure.
-_RETRY_INTERVAL = 60.0
+#: The delayed re-send of a failed write waits a random time between these bounds
+#: (seconds), so several integrations do not hit the dongle in lock-step. Every
+#: further re-send waits :data:`_RETRY_STEP` seconds longer than the previous one,
+#: backing off gently while never giving up.
+_RETRY_MIN = 20.0
+_RETRY_MAX = 90.0
+#: Seconds added to the wait of every re-send after the first.
+_RETRY_STEP = 7.0
+
+
+def next_retry_delay(previous: float | None = None) -> float:
+    """The wait before the next re-send of a failed write.
+
+    The first wait is a random time between :data:`_RETRY_MIN` and
+    :data:`_RETRY_MAX` seconds; every further re-send waits :data:`_RETRY_STEP`
+    seconds longer than the previous one, so a dongle that stays busy is hit a
+    little less often each round.
+    """
+    if previous is None:
+        return random.uniform(_RETRY_MIN, _RETRY_MAX)
+    return previous + _RETRY_STEP
 
 
 def window_to_dict(window: TouWindow) -> dict[str, Any]:
@@ -883,10 +901,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Run a write operation, log it, and re-send it later if it fails.
 
         ``operation`` is a zero-argument factory returning a *fresh* awaitable,
-        so the same write can be sent again after :data:`_RETRY_INTERVAL`
-        seconds. The flaky dongle sometimes drops a whole write; instead of
-        leaving the inverter misprogrammed, the write is re-sent until it is
-        confirmed, so the log ends on a success.
+        so the same write can be sent again after a random delay (see
+        :func:`next_retry_delay`). The flaky dongle sometimes drops a whole
+        write; instead of leaving the inverter misprogrammed, the write is
+        re-sent until it is confirmed, so the log ends on a success.
 
         ``operation`` resolves to the number of sends the write needed, which is
         recorded on the entry (so the log can say "3x mislukt") and added to the
@@ -941,9 +959,16 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         reason: str | None = None,
         plan: bool = False,
         retry: int = 0,
+        previous_delay: float | None = None,
     ) -> None:
-        """Queue a failed write to be sent again after :data:`_RETRY_INTERVAL`."""
+        """Queue a failed write to be sent again after a delay.
+
+        The first delay is random (see :func:`next_retry_delay`); a re-send of a
+        write that keeps failing waits ``previous_delay`` + :data:`_RETRY_STEP`
+        seconds, so the wait grows with every round.
+        """
         self._clear_write_retry(key)
+        delay = next_retry_delay(previous_delay)
         entry: dict[str, Any] = {
             "action": action,
             "operation": operation,
@@ -952,11 +977,12 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "reason": reason,
             "plan": plan,
             "retry": retry,
+            "delay": delay,
             "unsub": None,
         }
         self._pending_writes[key] = entry
         entry["unsub"] = async_call_later(
-            self.hass, _RETRY_INTERVAL, partial(self._run_write_retry, key)
+            self.hass, delay, partial(self._run_write_retry, key)
         )
 
     def _clear_write_retry(self, key: str) -> None:
@@ -1014,6 +1040,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reason=entry["reason"],
                 plan=entry["plan"],
                 retry=entry["retry"],
+                previous_delay=entry["delay"],
             )
             return
         self._clear_write_retry(key)

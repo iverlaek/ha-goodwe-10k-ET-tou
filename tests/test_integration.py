@@ -22,6 +22,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.goodwe_tou import _recheck_minutes
+from custom_components.goodwe_tou.coordinator import next_retry_delay
 from custom_components.goodwe_tou.const import (
     CONF_ADAPTIVE_LOAD,
     CONF_CHARGE_WINDOWS,
@@ -710,6 +711,30 @@ async def test_write_retries_once_then_succeeds(
     assert retries.attributes["last_attempts"] == 2
 
 
+def test_next_retry_delay_is_random_between_the_bounds():
+    """The first re-send waits a random time between the configured bounds."""
+    with (
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 20.0),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 90.0),
+    ):
+        delays = [next_retry_delay() for _ in range(200)]
+    assert all(20.0 <= delay <= 90.0 for delay in delays)
+    # Not a constant: the wait is actually randomised.
+    assert len(set(delays)) > 1
+
+
+def test_next_retry_delay_grows_by_seven_seconds():
+    """Every re-send after the first waits 7 s longer than the previous one."""
+    with (
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 20.0),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 20.0),
+    ):
+        first = next_retry_delay()
+    assert first == 20.0
+    assert next_retry_delay(first) == 27.0
+    assert next_retry_delay(27.0) == 34.0
+
+
 @pytest.mark.asyncio
 async def test_failed_write_is_retried_after_a_delay(
     hass: HomeAssistant, entry: MockConfigEntry, store: list[int], fast_retries
@@ -731,7 +756,9 @@ async def test_failed_write_is_retried_after_a_delay(
     with (
         patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
         patch.object(GoodweUdpClient, "write_register", side_effect=_write),
-        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_STEP", 1),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -756,7 +783,7 @@ async def test_failed_write_is_retried_after_a_delay(
         # The dongle recovers; the queued re-send succeeds on the next round.
         state["working"] = True
         async_fire_time_changed(
-            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=5)
         )
         await hass.async_block_till_done()
 
@@ -791,7 +818,9 @@ async def test_failed_write_keeps_retrying_until_it_sticks(
     with (
         patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
         patch.object(GoodweUdpClient, "write_register", side_effect=_write),
-        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_STEP", 1),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -805,9 +834,12 @@ async def test_failed_write_keeps_retrying_until_it_sticks(
             )
         await hass.async_block_till_done()
 
-        # A second failed round is logged and queued again.
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        assert coordinator._pending_writes["set_windows"]["delay"] == 1
+
+        # A second failed round is logged and queued again, waiting a step longer.
         async_fire_time_changed(
-            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=5)
         )
         await hass.async_block_till_done()
 
@@ -816,11 +848,12 @@ async def test_failed_write_keeps_retrying_until_it_sticks(
         ).attributes["entries"]
         assert entries[0]["result"] == "error"
         assert entries[0]["retry"] == 1
+        assert coordinator._pending_writes["set_windows"]["delay"] == 2
 
         # The third round finally sticks.
         state["working"] = True
         async_fire_time_changed(
-            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=5)
         )
         await hass.async_block_till_done()
 
@@ -850,7 +883,9 @@ async def test_manual_override_cancels_a_pending_plan_retry(
     with (
         patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
         patch.object(GoodweUdpClient, "write_register", side_effect=_write),
-        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_STEP", 1),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -874,7 +909,7 @@ async def test_manual_override_cancels_a_pending_plan_retry(
         # The queued re-send is gone, so firing the clock changes nothing.
         state["working"] = True
         async_fire_time_changed(
-            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=2)
+            hass, dt.datetime.now(dt.UTC) + dt.timedelta(seconds=5)
         )
         await hass.async_block_till_done()
 
@@ -894,7 +929,9 @@ async def test_unload_cancels_pending_write_retries(
         patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
         # A write that never lands: the read-back never matches.
         patch.object(GoodweUdpClient, "write_register", return_value=None),
-        patch("custom_components.goodwe_tou.coordinator._RETRY_INTERVAL", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MIN", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_MAX", 1),
+        patch("custom_components.goodwe_tou.coordinator._RETRY_STEP", 1),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()

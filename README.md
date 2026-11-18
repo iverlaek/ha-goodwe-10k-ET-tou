@@ -82,13 +82,13 @@ automate them from scripts, automations and dashboards.
   dongle (not the LAN/Wi-Fi v2.0 module) is easily overloaded and sometimes does
   not confirm a write. Instead of leaving the programming wrong, the integration
   sends the whole change again (up to 3 times, with a short pause between
-  attempts) and, when a write still fails, queues it and **re-sends it every
-  minute until the inverter confirms it** — so the log's newest entry ends up a
-  success instead of a stale failure. A **retry counter**
-  (`sensor.goodwe_time_of_use_herpogingen`) tracks how often a re-send was needed,
-  and the log shows it: `gelukt (2x)` when it took two sends, `3x mislukt` when
-  all three failed, `1x mislukt` for a single dropped send, and `· herpoging 2`
-  on the delayed re-send rounds.
+  attempts) and, when a write still fails, queues it and **re-sends it after a
+  random wait of 20–90 s, then 7 s longer every round, until the inverter
+  confirms it** — so the log's newest entry ends up a success instead of a stale
+  failure. A **retry counter** (`sensor.goodwe_time_of_use_herpogingen`) tracks
+  how often a re-send was needed, and the log shows it: `gelukt (2x)` when it
+  took two sends, `3x mislukt` when all three failed, `1x mislukt` for a single
+  dropped send, and `· herpoging 2` on the delayed re-send rounds.
 - **Deviation tracking with an adaptive house load.** The planner's assumed
   house load is compared with what the house really used, hour by hour, and
   adjusted for the weather: a cold day (the air conditioner working harder) or a
@@ -441,11 +441,12 @@ When a write needed a **re-send** (the flaky Wi-Fi dongle did not confirm it the
 first time) the badge shows how many attempts it took: `gelukt (2x)` on success,
 `3x mislukt` when every attempt failed, and `1x mislukt` for a single dropped
 send. When a whole write still failed, the integration **queues it and re-sends
-it every minute until the inverter confirms it**; each round is logged with a
-`· herpoging 2` marker, so the log's newest entry ends up a success. While the
-dongle needed a re-send **today** the card also shows a small orange note —
-*Herpogingen vandaag: 3 (totaal 12)* — fed by the `retry` counter on the activity
-sensor. A healthy dongle leaves the counter at 0 and the note stays hidden.
+it after a random wait of 20–90 s, growing by 7 s every round, until the inverter
+confirms it**; each round is logged with a `· herpoging 2` marker, so the log's
+newest entry ends up a success. While the dongle needed a re-send **today** the
+card also shows a small orange note — *Herpogingen vandaag: 3 (totaal 12)* — fed
+by the `retry` counter on the activity sensor. A healthy dongle leaves the
+counter at 0 and the note stays hidden.
 
 ## The deviation card
 
