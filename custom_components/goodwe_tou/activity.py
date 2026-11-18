@@ -122,8 +122,9 @@ def make_entry(
     "3x mislukt" so the user can see the dongle being overloaded.
 
     ``retry`` is the number of the delayed re-send round (``0`` for the first
-    attempt). A failed write is re-sent every minute until it sticks, and each
-    round is logged, so a value above ``0`` marks a re-send.
+    attempt). A failed write is re-sent after a random 20-90 s wait that grows by
+    7 s every round until it sticks, and each round is logged, so a value above
+    ``0`` marks a re-send.
     """
     moment = now or dt.datetime.now(dt.UTC).astimezone()
     return {
