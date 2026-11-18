@@ -2094,6 +2094,33 @@ async def test_profile_is_built_from_statistics(
 
 
 @pytest.mark.asyncio
+async def test_profile_clamps_a_negative_house_load(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """A negative house-consumption reading becomes a zero net load, never below."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # The derived house sensor tips negative while the battery charges from PV.
+    load = _stat_rows([-1500.0] * 48 + [2000.0] * 48, day_start)
+    grid = _stat_rows([0.0] * 96, day_start)
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        _patch_statistics(load, grid),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN, "get_profile", {}, blocking=True, return_response=True
+        )
+
+    assert min(response["load"]) == 0.0
+    assert response["load"][0] == 0.0
+    assert response["load"][60] == pytest.approx(2.0)
+
+
+@pytest.mark.asyncio
 async def test_profile_feeds_the_planner(
     hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
 ):

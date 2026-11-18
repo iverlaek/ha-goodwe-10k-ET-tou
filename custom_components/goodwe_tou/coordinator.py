@@ -818,7 +818,13 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         def _kw(values: list[float]) -> list[float]:
             return [round(value / 1000.0, 4) for value in values]
 
-        load_kw = _kw(average_by_quarter(load_points))
+        # The house-consumption sensor is derived from the PV, battery and meter
+        # readings, which the dongle samples a moment apart. While the battery
+        # charges hard from the panels the balance briefly tips negative, which is
+        # physically impossible for a load. Clamp at zero so the curve is the real
+        # *net* house load: the part the panels do not cover, which is exactly the
+        # dip in the "duck curve".
+        load_kw = [max(0.0, value) for value in _kw(average_by_quarter(load_points))]
         imports, exports = split_grid(
             grid_points, invert=self._profile_grid_invert()
         )
