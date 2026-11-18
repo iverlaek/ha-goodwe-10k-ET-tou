@@ -742,7 +742,8 @@ automation:
 
 A ready-to-paste dashboard is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the live
-power card, the read-only overview, the planner, the Tibber price card, the
+power card, the read-only overview, the planner, the battery SOC history graph,
+the solar power-flow card, the solar forecast clock, the Tibber price card, the
 manual charge/discharge buttons, the activity log and the deviation log. Create a
 dashboard (**Settings → Dashboards → Add dashboard → New dashboard from scratch**),
 open the **raw configuration editor** and paste this in:
@@ -758,6 +759,13 @@ views:
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge
         hours_back: 24
+
+      # Battery state of charge over the last two days (built-in card).
+      - type: history-graph
+        title: Batterij SOC
+        hours_to_show: 48
+        entities:
+          - entity: sensor.battery_state_of_charge
 
       - type: custom:goodwe-tou-planner-card
         title: Laadplanning
@@ -797,6 +805,49 @@ views:
           min: 0
           max: 2500
           show_gauge: inner
+
+      # Live solar power flow with the production forecast overlaid (HACS
+      # "solar-bar-card"). The forecast is the dotted line.
+      - type: custom:solar-bar-card
+        inverter_size: 10
+        production_entity: sensor.pv_power
+        self_consumption_entity: sensor.house_consumption
+        grid_power_entity: sensor.meter_active_power_total
+        invert_grid_power: false
+        forecast_entity: sensor.power_production_now
+        battery_soc_entity: sensor.battery_state_of_charge
+        battery_power_entity: sensor.battery_power
+        invert_battery_power: true
+        battery_capacity: 24
+        import_history_entity: sensor.today_energy_import
+        export_history_entity: sensor.today_energy_export
+        production_history_entity: sensor.energy_production_today
+        show_header: true
+        header_title: Solar
+        show_stats: true
+        show_legend: true
+        color_palette: classic-solar
+
+      # Solar production forecast as a clock (HACS "pv-forecast-card").
+      - type: custom:clock-pv-forecast-card
+        bar_style: gradient
+        bar_type: segmented
+        color_thresholds_manual: ""
+        date_format: short
+        display_mode: relative
+        entity_remaining: sensor.energy_production_today_remaining
+        entity_today: sensor.energy_production_today
+        entity_tomorrow: sensor.energy_production_tomorrow
+        gradient_fixed: false
+        max_value: 75
+        relative_plus_one: false
+        remaining_blink: false
+        remaining_indicator: marker
+        remaining_inverted: false
+        remaining_threshold: 41
+        scale_mode: fixed
+        show_attribute_value: false
+        show_tooltips: true
 
       # Manual charge / discharge. Only visible while the automation is paused
       # (Auto re-check off). They flip the direction of one window - window 4 by
@@ -913,8 +964,11 @@ views:
 
 The bundled `custom:goodwe-tou-*` cards are served by the integration itself, so
 they need no extra resources. The example also uses the HACS frontend cards
-[`button-card`](https://github.com/custom-cards/button-card) and
-[`apexcharts-card`](https://github.com/RomRider/apexcharts-card).
+[`button-card`](https://github.com/custom-cards/button-card),
+[`apexcharts-card`](https://github.com/RomRider/apexcharts-card),
+[`modern-circular-gauge`](https://github.com/selvalt7/modern-circular-gauge),
+[`solar-bar-card`](https://github.com/0xAHA/solar-bar-card) and
+[`pv-forecast-card`](https://github.com/dropqube/pv-forecast-card).
 
 ### Manual charge / discharge buttons
 
