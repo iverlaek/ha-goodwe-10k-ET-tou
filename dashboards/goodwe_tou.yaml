@@ -13,6 +13,24 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
+      # What today has cost so far and what today is expected to cost in total,
+      # based on the P1 meter and the measured consumption profile. It shows a
+      # green check or red cross when a change to the four planner windows makes
+      # the predicted cost better or worse.
+      - type: custom:goodwe-tou-cost-card
+        title: Elektriciteitskosten
+        import_entity: sensor.p1_meter_energy_import
+        export_entity: sensor.p1_meter_energy_export
+        today_import_entity: sensor.today_energy_import
+        today_export_entity: sensor.today_energy_export
+        price_entity: sensor.average_electricity_price
+        profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
+        soc_entity: sensor.battery_state_of_charge
+        capacity_kwh: 24
+        min_soc: 20
+        charge_kw: 6
+        discharge_kw: 6
+
       - type: custom:goodwe-tou-card
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge

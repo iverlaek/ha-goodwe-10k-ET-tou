@@ -24,6 +24,7 @@ _CARDS = {
     "goodwe-tou-power-card.js": "goodwe-tou-power-card",
     "goodwe-tou-deviation-card.js": "goodwe-tou-deviation-card",
     "goodwe-tou-profile-card.js": "goodwe-tou-profile-card",
+    "goodwe-tou-cost-card.js": "goodwe-tou-cost-card",
 }
 
 
@@ -127,3 +128,37 @@ def test_planner_card_offers_a_selectable_export_spread() -> None:
     assert 'id="spread"' in text
     assert "export_min_spread: this._spreadCt / 100" in text
     assert "spread_ct" in text
+
+
+def test_cost_card_prices_the_p1_meter_and_listens_for_planner_edits() -> None:
+    """The cost card reads the P1 totals and reacts to the planner's edits."""
+    text = (_WWW / "goodwe-tou-cost-card.js").read_text(encoding="utf-8")
+    assert 'IMPORT_DEFAULT = "sensor.p1_meter_energy_import"' in text
+    assert 'EXPORT_DEFAULT = "sensor.p1_meter_energy_export"' in text
+    assert "recorder/statistics_during_period" in text
+    assert "goodwe-tou-windows-changed" in text
+    # Green check for a cheaper change, red cross for a more expensive one.
+    assert '"✓"' in text
+    assert '"✗"' in text
+    assert 'better: "{delta} goedkoper"' in text
+    assert 'worse: "{delta} duurder"' in text
+
+
+def test_planner_card_notifies_the_cost_card_of_window_edits() -> None:
+    """Planner edits are visible to the cost card before Toepassen."""
+    text = (_WWW / "goodwe-tou-planner-card.js").read_text(encoding="utf-8")
+    assert "_notifyCostCard" in text
+    assert "goodwe-tou-windows-changed" in text
+    assert "CustomEvent" in text
+
+
+def test_dashboard_opens_with_the_cost_card() -> None:
+    """The example dashboard puts the cost card first."""
+    text = (_ROOT / "dashboards" / "goodwe_tou.yaml").read_text(encoding="utf-8")
+    cost_at = text.index("custom:goodwe-tou-cost-card")
+    overview_at = text.index("custom:goodwe-tou-card", cost_at)
+    assert cost_at < overview_at
+    first_card = text.index("cards:")
+    assert text.index("custom:goodwe-tou-cost-card", first_card) < text.index(
+        "custom:goodwe-tou-card", first_card
+    )

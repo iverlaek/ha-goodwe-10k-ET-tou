@@ -115,6 +115,11 @@ automate them from scripts, automations and dashboards.
   `sensor.goodwe_time_of_use_verbruiksprofiel` sensor, the `goodwe_tou.get_profile`
   / `goodwe_tou.refresh_profile` services and the bundled **profile card**
   (`custom:goodwe-tou-profile-card`).
+- A **cost card** (`custom:goodwe-tou-cost-card`) that prices today's actual
+  import and export from the P1 meter at the quarter-hour market prices and adds
+  the predicted cost of the rest of the day. Edit one of the four planner
+  windows and it shows a green check when the change is cheaper, or a red cross
+  when the predicted cost goes up.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - **Dutch or English**: chosen at installation and changeable in the options. It
@@ -538,6 +543,48 @@ which carries the grid power (with a sign toggle for meters that report import a
 positive). `goodwe_tou.refresh_profile` rebuilds it on demand; otherwise the
 integration refreshes it at setup and every six hours.
 
+## The cost card
+
+`custom:goodwe-tou-cost-card` answers two questions at a glance:
+
+- **Nu al gebruikt** — what today's electricity has cost so far. The card reads
+  the P1 meter's import and export totals from Home Assistant's long-term
+  statistics, so it works even when the dashboard was not open at midnight. The
+  kWh are spread over the elapsed quarter hours with the measured consumption
+  profile (the same shape the planner uses), so each quarter hour gets its own
+  market price instead of one daily average.
+- **Verwacht totaal vandaag** — that cost so far plus the predicted cost of the
+  remaining quarter hours. The prediction starts from the measured import/export
+  profile, scaled to the energy actually used today, and adds the effect of the
+  four Time-of-Use windows: charging buys its grid energy (including the
+  `battery_cost` adder), discharging earns the export price.
+
+The planner sends every edit of the four windows — start, stop, direction and
+power — to the cost card, even before **Toepassen**. The card recalculates the
+predicted total for the old and the new schedule and shows a **green check** when
+the change is cheaper or a **red cross** when the predicted cost goes up, with
+the difference in euros. Without a change there is no symbol.
+
+```yaml
+type: custom:goodwe-tou-cost-card
+title: Elektriciteitskosten                     # optional
+import_entity: sensor.p1_meter_energy_import
+export_entity: sensor.p1_meter_energy_export
+today_import_entity: sensor.today_energy_import # fallback without P1 statistics
+today_export_entity: sensor.today_energy_export
+price_entity: sensor.average_electricity_price
+profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
+soc_entity: sensor.battery_state_of_charge
+capacity_kwh: 24
+min_soc: 20
+charge_kw: 6
+discharge_kw: 6
+battery_cost: 0.05                              # €/kWh added to grid charging
+rte: 0.85
+prefix: goodwe_time_of_use                      # optional entity-id prefix
+language: nl                                    # optional, overrides the language
+```
+
 ## Cheapest hours
 
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
@@ -863,12 +910,13 @@ automation:
 ## A dashboard
 
 A ready-to-paste dashboard is in
-[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the live
-power card, the read-only overview, the planner, the battery SOC history graph,
-the solar power-flow card, the solar forecast clock, the Tibber price card, the
-manual charge/discharge buttons, the activity log and the deviation log. Create a
-dashboard (**Settings → Dashboards → Add dashboard → New dashboard from scratch**),
-open the **raw configuration editor** and paste this in:
+[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It opens with the
+cost card, then shows the read-only overview, the planner, the battery SOC
+history graph, the solar power-flow card, the solar forecast clock, the Tibber
+price card, the manual charge/discharge buttons, the activity log and the
+deviation log. Create a dashboard (**Settings → Dashboards → Add dashboard → New
+dashboard from scratch**), open the **raw configuration editor** and paste this
+in:
 
 ```yaml
 title: GoodWe TOU
@@ -877,6 +925,20 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
+      - type: custom:goodwe-tou-cost-card
+        title: Elektriciteitskosten
+        import_entity: sensor.p1_meter_energy_import
+        export_entity: sensor.p1_meter_energy_export
+        today_import_entity: sensor.today_energy_import
+        today_export_entity: sensor.today_energy_export
+        price_entity: sensor.average_electricity_price
+        profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
+        soc_entity: sensor.battery_state_of_charge
+        capacity_kwh: 24
+        min_soc: 20
+        charge_kw: 6
+        discharge_kw: 6
+
       - type: custom:goodwe-tou-card
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge

@@ -45,7 +45,7 @@
  *   spread_ct: 20                                        # optional, minimum export spread (ct/kWh)
  */
 
-const CARD_VERSION = "1.9.0";
+const CARD_VERSION = "1.10.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -1198,6 +1198,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     }
     this._dirty = true;
     this._render();
+    this._notifyCostCard();
   }
 
   _toggleMode(index) {
@@ -1206,6 +1207,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     seg.mode = seg.mode === "charge" ? "discharge" : "charge";
     this._dirty = true;
     this._render();
+    this._notifyCostCard();
   }
 
   _setPct(index) {
@@ -1215,6 +1217,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     seg.pct = clamp(Math.round(Number(row.pctInput.value)) || 0, 1, 100);
     this._dirty = true;
     this._renderRow(index);
+    this._notifyCostCard();
   }
 
   _setStart(index) {
@@ -1228,6 +1231,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._dirty = true;
     this._renderRow(index);
     this._renderBand();
+    this._notifyCostCard();
   }
 
   _setStop(index) {
@@ -1241,6 +1245,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._dirty = true;
     this._renderRow(index);
     this._renderBand();
+    this._notifyCostCard();
   }
 
   _toggleDay(index, key) {
@@ -1250,6 +1255,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     else seg.days.add(key);
     this._dirty = true;
     this._render();
+    this._notifyCostCard();
   }
 
   // -- dragging ----------------------------------------------------------
@@ -1312,6 +1318,7 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._dirty = true;
     this._renderRow(index);
     this._renderBand();
+    this._notifyCostCard();
   }
 
   _onPointerUp() {
@@ -1349,6 +1356,21 @@ class GoodweTouPlannerCard extends HTMLElement {
     this._callService("button", "press", {
       entity_id: this._entity("button", "read_from_inverter"),
     }).catch((err) => this._showError(err));
+  }
+
+  // The cost card compares the predicted cost of the schedule before and after
+  // an edit. The planner keeps its edits in memory until "Toepassen", so the
+  // window entities alone cannot show that; this event carries them live.
+  _notifyCostCard() {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("goodwe-tou-windows-changed", {
+          detail: { windows: this._collectWindows() },
+        })
+      );
+    } catch (_err) {
+      // Without CustomEvent the cost card simply follows the entities.
+    }
   }
 
   _calc() {
@@ -1393,6 +1415,7 @@ class GoodweTouPlannerCard extends HTMLElement {
       }
       seg.days = expandDays(window.days || "all");
     });
+    this._notifyCostCard();
   }
 
   _apply() {
