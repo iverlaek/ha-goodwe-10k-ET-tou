@@ -1,5 +1,10 @@
 # GoodWe Time-of-Use (Eco Mode) for Home Assistant
 
+<p align="center">
+  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=iverlaek&amp;repository=ha-goodwe-10k-ET-tou&amp;category=integration"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open a repository inside the Home Assistant Community Store."></a>
+  <a href="https://my.home-assistant.io/redirect/config_flow_start/?domain=goodwe_tou"><img src="https://my.home-assistant.io/badges/config_flow_start.svg" alt="Open your Home Assistant instance and start setting up a new integration."></a>
+</p>
+
 A small, self-contained Home Assistant custom integration that reads and writes
 the four **Time-of-Use / Eco Mode** windows of a GoodWe hybrid inverter directly
 over the local network — no cloud, no SEMS portal, no dependency on another
@@ -86,10 +91,15 @@ automate them from scripts, automations and dashboards.
 
 ### Via the Home Assistant Marketplace (HACS)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=iverlaek&repository=ha-goodwe-10k-ET-tou&category=integration)
+
 1. Open **Settings → Devices & services → Marketplace**.
 2. Choose **Add repository** / **Add from link** and paste:
    `https://github.com/iverlaek/ha-goodwe-10k-ET-tou`
 3. Install **GoodWe Time-of-Use (Eco Mode)** and restart Home Assistant.
+
+Or click the blue **Open in Home Assistant** button above: it opens HACS on your
+own instance with this repository already filled in.
 
 ### Manually
 
@@ -99,6 +109,11 @@ Copy the `custom_components/goodwe_tou` folder into your Home Assistant
 ## Configuration
 
 **Settings → Devices & services → Add integration → GoodWe Time-of-Use**.
+
+[![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=goodwe_tou)
+
+The blue **Add integration** button above jumps straight to the setup dialog on
+your own instance.
 
 | Field | Default | Description |
 | --- | --- | --- |
