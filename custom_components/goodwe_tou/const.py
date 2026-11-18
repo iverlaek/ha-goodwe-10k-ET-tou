@@ -67,6 +67,15 @@ CONF_DEVIATION_SIZE: Final = "deviation_size"
 #: The language the integration speaks: the planner's reasoning, the activity
 #: log and the entity names. Chosen at installation, changeable in the options.
 CONF_LANGUAGE: Final = "language"
+#: Quarter-hour consumption profile. Instead of one flat house load the planner
+#: uses the average power per quarter hour measured over the last days: the house
+#: load (which the battery covers) plus the grid import and export, so the card
+#: can draw the real daily "duck curve".
+CONF_PROFILE_ENABLED: Final = "profile_enabled"
+CONF_PROFILE_DAYS: Final = "profile_days"
+CONF_PROFILE_LOAD_ENTITY: Final = "profile_load_entity"
+CONF_PROFILE_GRID_ENTITY: Final = "profile_grid_entity"
+CONF_PROFILE_GRID_INVERT: Final = "profile_grid_invert"
 
 DEFAULT_PRICE_ENTITY: Final = "sensor.average_electricity_price"
 #: Where the planner reads its forecast: an existing price entity ("entity",
@@ -152,6 +161,23 @@ LANGUAGE_NL: Final = "nl"
 LANGUAGE_EN: Final = "en"
 #: The languages the integration speaks.
 LANGUAGES: Final = (LANGUAGE_NL, LANGUAGE_EN)
+
+#: Use the measured quarter-hour profile as the planner's house load. On by
+#: default; without enough history the planner falls back to the flat standby.
+DEFAULT_PROFILE_ENABLED: Final = True
+#: How many days of history the profile averages over. The recorder only keeps
+#: ``purge_keep_days`` (10 by default), so the card reports what it really got.
+DEFAULT_PROFILE_DAYS: Final = 14
+#: The house-consumption sensor the load profile is built from.
+DEFAULT_PROFILE_LOAD_ENTITY: Final = "sensor.house_consumption"
+#: The signed grid-power sensor the import/export profiles are built from. The
+#: GoodWe meter reports a negative value while drawing from the grid.
+DEFAULT_PROFILE_GRID_ENTITY: Final = "sensor.meter_active_power_total"
+#: Flip the grid sign for a meter that reports positive while importing.
+DEFAULT_PROFILE_GRID_INVERT: Final = False
+#: Hard bounds for the profile window (days).
+MIN_PROFILE_DAYS: Final = 1
+MAX_PROFILE_DAYS: Final = 60
 
 # Price slots are 15 minutes in the ENTSO-e attribute.
 SLOT_MINUTES: Final = 15

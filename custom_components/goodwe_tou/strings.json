@@ -57,7 +57,12 @@
           "log_size": "Activity log size (entries)",
           "min_cell_voltage": "Low-cell stop threshold (mV, 0 = off)",
           "tibber_prices": "Expose Tibber day-ahead prices (price sensor)",
-          "tibber_home": "Tibber home name (empty = first/only home)"
+          "tibber_home": "Tibber home name (empty = first/only home)",
+          "profile_enabled": "Use the measured consumption profile (kW per quarter hour)",
+          "profile_days": "Profile window (days)",
+          "profile_load_entity": "House consumption sensor (load profile)",
+          "profile_grid_entity": "Grid power sensor (import/export profile)",
+          "profile_grid_invert": "Invert the grid sign (positive = import)"
         }
       }
     }

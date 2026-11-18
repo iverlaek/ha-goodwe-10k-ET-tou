@@ -23,6 +23,7 @@ _CARDS = {
     "goodwe-tou-log-card.js": "goodwe-tou-log-card",
     "goodwe-tou-power-card.js": "goodwe-tou-power-card",
     "goodwe-tou-deviation-card.js": "goodwe-tou-deviation-card",
+    "goodwe-tou-profile-card.js": "goodwe-tou-profile-card",
 }
 
 
@@ -71,3 +72,15 @@ def test_deviation_card_reads_the_deviation_service() -> None:
     # It shows the learned model and today's totals.
     assert "effective_kw" in text
     assert "temp_coeff" in text
+
+
+def test_profile_card_reads_the_profile_service() -> None:
+    text = (_WWW / "goodwe-tou-profile-card.js").read_text(encoding="utf-8")
+    # The profile is fetched through the integration's own service.
+    assert '"get_profile"' in text
+    # The refresh trigger is the profile sensor (`<prefix>_verbruiksprofiel`).
+    assert "_verbruiksprofiel" in text
+    # All three curves are drawn (the duck curve).
+    assert "loadline" in text
+    assert "importline" in text
+    assert "exportline" in text

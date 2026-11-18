@@ -506,3 +506,109 @@ def test_windows_cost_counts_charge_and_discharge():
     # = -0.525; net = -0.375.
     assert cost == pytest.approx(-0.375)
 
+
+# -- measured quarter-hour load profile ------------------------------------
+
+
+def _flat_profile(kw: float) -> list[float]:
+    return [kw] * 96
+
+
+def test_forecast_soc_uses_the_load_profile():
+    day = dt.datetime(2026, 11, 16, 0, 0)  # a Monday
+    points = optimizer.forecast_soc(
+        [],
+        day,
+        day + dt.timedelta(hours=2),
+        soc=100,
+        capacity_kwh=10,
+        load_profile=_flat_profile(2.0),
+    )
+    values = dict(points)
+    # 2 kW for 2 hours on a 10 kWh battery = 40 percentage points.
+    assert values[day + dt.timedelta(hours=2)] == 60
+
+
+def test_forecast_soc_load_profile_overrides_the_flat_base_load():
+    day = dt.datetime(2026, 11, 16, 0, 0)
+    points = optimizer.forecast_soc(
+        [],
+        day,
+        day + dt.timedelta(hours=1),
+        soc=100,
+        capacity_kwh=10,
+        base_load_kw=1.0,
+        load_profile=_flat_profile(3.0),
+    )
+    # The profile wins: 3 kW for 1 hour = 30 points, not the 10 of the standby.
+    assert dict(points)[day + dt.timedelta(hours=1)] == 70
+
+
+def test_build_plan_profile_note_replaces_the_standby_note():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots(start, 96)
+    plan = optimizer.build_plan(
+        slots,
+        start,
+        soc=20,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        standby_kw=1.8,
+        load_profile=_flat_profile(1.2),
+        lang="nl",
+    )
+    text = " ".join(plan.notes)
+    assert "verbruiksprofiel" in text
+    assert "standby" not in text
+
+
+def test_build_plan_without_a_profile_keeps_the_standby_note():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots(start, 96)
+    plan = optimizer.build_plan(
+        slots,
+        start,
+        soc=20,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        standby_kw=1.8,
+        lang="nl",
+    )
+    text = " ".join(plan.notes)
+    assert "standby" in text
+    assert "verbruiksprofiel" not in text
+
+
+def test_build_plan_profile_changes_the_charge_sizing():
+    start = dt.datetime(2026, 11, 16, 0, 0)
+    slots = _slots(start, 96)
+    flat = optimizer.build_plan(
+        slots,
+        start,
+        soc=20,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        standby_kw=0.5,
+        lang="nl",
+    )
+    heavy = optimizer.build_plan(
+        slots,
+        start,
+        soc=20,
+        capacity_kwh=24,
+        charge_power_kw=6,
+        discharge_power_kw=6,
+        standby_kw=0.5,
+        load_profile=_flat_profile(2.5),
+        lang="nl",
+    )
+    # A heavier measured load means more energy has to be charged back in, so the
+    # plan asks for at least as many charge slots as the flat standby did.
+    flat_charge = sum(1 for w in flat.windows if w.mode == "charge")
+    heavy_charge = sum(1 for w in heavy.windows if w.mode == "charge")
+    assert heavy_charge >= flat_charge
+
+

@@ -52,6 +52,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "entity.plan": "Plan",
         "entity.deviation": "Afwijking",
         "entity.retries": "Herpogingen",
+        "entity.profile": "Verbruiksprofiel",
         "entity.prices": "Stroomprijzen",
         "entity.eco_mode": "ECO-modus",
         "entity.auto_replan": "Auto-herberekening",
@@ -114,6 +115,10 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.standby_note": (
             "Het huis gebruikt ongeveer {standby:.1f} kW standby; dat "
             "neemt de batterij in ECO-modus zelf voor haar rekening."
+        ),
+        "plan.profile_note": (
+            "De planning gebruikt het gemeten verbruiksprofiel per kwartier: "
+            "gemiddeld {load:.2f} kW, ongeveer {kwh:.1f} kWh per dag."
         ),
         "plan.load_note": (
             "Het huisverbruik is weerafhankelijk: {base:.2f} kW basis plus "
@@ -200,6 +205,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "entity.plan": "Plan",
         "entity.deviation": "Deviation",
         "entity.retries": "Retries",
+        "entity.profile": "Consumption profile",
         "entity.prices": "Energy prices",
         "entity.eco_mode": "ECO mode",
         "entity.auto_replan": "Auto re-check",
@@ -261,6 +267,10 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.standby_note": (
             "The house draws about {standby:.1f} kW standby; the battery covers "
             "that itself in ECO mode."
+        ),
+        "plan.profile_note": (
+            "The planner uses the measured quarter-hour consumption profile: "
+            "{load:.2f} kW on average, about {kwh:.1f} kWh per day."
         ),
         "plan.load_note": (
             "The house load follows the weather: {base:.2f} kW base plus "

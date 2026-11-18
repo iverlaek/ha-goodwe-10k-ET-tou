@@ -40,6 +40,11 @@ from .const import (
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_PV_POWER_ENTITY,
+    CONF_PROFILE_DAYS,
+    CONF_PROFILE_ENABLED,
+    CONF_PROFILE_GRID_ENTITY,
+    CONF_PROFILE_GRID_INVERT,
+    CONF_PROFILE_LOAD_ENTITY,
     CONF_RECHECK_MINUTES,
     CONF_RTE,
     CONF_SCAN_INTERVAL,
@@ -76,6 +81,11 @@ from .const import (
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
     DEFAULT_PV_POWER_ENTITY,
+    DEFAULT_PROFILE_DAYS,
+    DEFAULT_PROFILE_ENABLED,
+    DEFAULT_PROFILE_GRID_ENTITY,
+    DEFAULT_PROFILE_GRID_INVERT,
+    DEFAULT_PROFILE_LOAD_ENTITY,
     DEFAULT_RECHECK_MINUTES,
     DEFAULT_RTE,
     DEFAULT_SCAN_INTERVAL,
@@ -91,6 +101,8 @@ from .const import (
     DOMAIN,
     LANGUAGE_EN,
     LANGUAGE_NL,
+    MAX_PROFILE_DAYS,
+    MIN_PROFILE_DAYS,
     PRICE_SOURCE_ENTITY,
     PRICE_SOURCE_TIBBER,
     RECHECK_CHOICES,
@@ -343,6 +355,32 @@ class GoodweTouOptionsFlow(OptionsFlow):
                     CONF_TIBBER_HOME,
                     default=default(CONF_TIBBER_HOME, DEFAULT_TIBBER_HOME),
                 ): str,
+                vol.Optional(
+                    CONF_PROFILE_ENABLED,
+                    default=default(CONF_PROFILE_ENABLED, DEFAULT_PROFILE_ENABLED),
+                ): bool,
+                vol.Optional(
+                    CONF_PROFILE_DAYS,
+                    default=default(CONF_PROFILE_DAYS, DEFAULT_PROFILE_DAYS),
+                ): vol.All(int, vol.Range(min=MIN_PROFILE_DAYS, max=MAX_PROFILE_DAYS)),
+                vol.Optional(
+                    CONF_PROFILE_LOAD_ENTITY,
+                    default=default(
+                        CONF_PROFILE_LOAD_ENTITY, DEFAULT_PROFILE_LOAD_ENTITY
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_PROFILE_GRID_ENTITY,
+                    default=default(
+                        CONF_PROFILE_GRID_ENTITY, DEFAULT_PROFILE_GRID_ENTITY
+                    ),
+                ): str,
+                vol.Optional(
+                    CONF_PROFILE_GRID_INVERT,
+                    default=default(
+                        CONF_PROFILE_GRID_INVERT, DEFAULT_PROFILE_GRID_INVERT
+                    ),
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

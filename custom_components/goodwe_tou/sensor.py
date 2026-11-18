@@ -42,6 +42,7 @@ async def async_setup_entry(
         TouPlanSensor(coordinator),
         TouDeviationSensor(coordinator),
         TouRetrySensor(coordinator),
+        TouProfileSensor(coordinator),
     ]
     if coordinator.price_coordinator is not None and coordinator.config_entry.options.get(
         CONF_TIBBER_PRICES, DEFAULT_TIBBER_PRICES
@@ -197,6 +198,59 @@ class TouDeviationSensor(GoodweTouEntity, SensorEntity):
             "learned": self.coordinator.data.get("learned"),
             "effective_kw": round(self.coordinator.effective_standby_kw(), 2),
             "today": self.coordinator.deviation_summary(),
+            # The cards read the language from here when they have no override.
+            "language": self.coordinator.language,
+        }
+
+
+class TouProfileSensor(GoodweTouEntity, SensorEntity):
+    """The measured quarter-hour consumption profile.
+
+    Instead of one flat house load the planner uses the average power per quarter
+    hour over the last days: the house load (which the battery covers) plus the
+    grid import and export, so the card can draw the real daily "duck curve". The
+    state is the house load in kWh per day; the attributes carry the 96-value
+    arrays in kW and the daily totals. The profile is built from the recorder's
+    5-minute statistics by the coordinator.
+    """
+
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    _unrecorded_attributes = frozenset({"load", "import", "export"})
+
+    def __init__(self, coordinator: GoodweTouCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "profile",
+            coordinator._t("entity.profile"),
+            "mdi:chart-bell-curve-cumulative",
+            domain="sensor",
+            object_id="verbruiksprofiel",
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        summary = self.coordinator.profile_summary()
+        value = summary.get("load_daily_kwh")
+        return round(float(value), 2) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        summary = self.coordinator.profile_summary()
+        return {
+            "load": summary.get("load", []),
+            "import": summary.get("import", []),
+            "export": summary.get("export", []),
+            "load_daily_kwh": summary.get("load_daily_kwh"),
+            "import_daily_kwh": summary.get("import_daily_kwh"),
+            "export_daily_kwh": summary.get("export_daily_kwh"),
+            "days": summary.get("days"),
+            "window_days": summary.get("window_days"),
+            "enabled": summary.get("enabled"),
+            "load_entity": summary.get("load_entity"),
+            "grid_entity": summary.get("grid_entity"),
+            "updated": summary.get("updated"),
             # The cards read the language from here when they have no override.
             "language": self.coordinator.language,
         }

@@ -477,3 +477,17 @@ get_deviations:
           min: 1
           max: 10000
           step: 1
+
+get_profile:
+  name: Get consumption profile
+  description: >-
+    Return the measured quarter-hour consumption profile the planner uses as the
+    house load, plus the grid import and export profiles and their daily totals.
+    The profile is the average power per quarter hour over the last days, built
+    from the recorder's 5-minute statistics. Used by the profile card.
+
+refresh_profile:
+  name: Refresh consumption profile
+  description: >-
+    Rebuild the quarter-hour consumption profile from the recorder right now,
+    instead of waiting for the next scheduled refresh, and return it.

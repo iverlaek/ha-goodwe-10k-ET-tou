@@ -46,6 +46,9 @@ from .const import (
 )
 from .i18n import day_label as _i18n_day_label
 from .i18n import translate, weekday_name
+from .profile import average_kw as _profile_average_kw
+from .profile import daily_kwh as _profile_daily_kwh
+from .profile import load_kwh as _profile_load_kwh
 from .registers import TouWindow, day_bit, mask_to_days
 
 
@@ -377,6 +380,7 @@ def build_plan(
     min_soc: float = DEFAULT_MIN_SOC,
     pv_credit_kwh: float = 0.0,
     standby_kw: float = DEFAULT_STANDBY_KW,
+    load_profile: Sequence[float] | None = None,
     export_hours: float | None = DEFAULT_EXPORT_HOURS,
     rte: float = DEFAULT_RTE,
     max_windows: int = len(WINDOWS),
@@ -395,10 +399,13 @@ def build_plan(
     a discount on the energy the house would otherwise buy, so it explains why
     charging cheaply now is worth it. ``standby_kw`` is the house load the battery
     has to cover in ECO mode; it drains the battery and has to be charged back
-    too. ``export_hours`` caps the energy that may be exported at full discharge
-    power so a bad solar period cannot drain the battery too early; pass ``None``
-    to disable the cap. ``rte`` is the round-trip efficiency of the battery:
-    because it loses energy, a cheap hour is only worth using when
+    too. When ``load_profile`` is given (a 96-value quarter-hour profile in kW) it
+    replaces the flat ``standby_kw``: the drain before the charge window and the
+    load during charging are read from the profile, so the plan follows the real
+    daily rhythm. ``export_hours`` caps the energy that may be exported at full
+    discharge power so a bad solar period cannot drain the battery too early; pass
+    ``None`` to disable the cap. ``rte`` is the round-trip efficiency of the
+    battery: because it loses energy, a cheap hour is only worth using when
     ``charge_price / rte < later_buy_price``. When the spread does not cover the
     losses the plan leaves the battery alone instead of charging it.
 
@@ -425,6 +432,37 @@ def build_plan(
     standby_kw = max(0.0, float(standby_kw))
     rte = min(1.0, max(0.1, float(rte)))
 
+    # The measured quarter-hour house load, when we have one. It replaces the flat
+    # standby: the drain before charging and the load during charging come from the
+    # profile, so the plan follows the real daily rhythm instead of one number. A
+    # zero quarter is a real zero (the recorder had no draw then); a quarter the
+    # profile does not cover falls back to the configured standby.
+    profile: list[float] | None = (
+        [max(0.0, float(value)) for value in load_profile] if load_profile else None
+    )
+
+    def _drain_kwh(begin: dt.datetime, finish: dt.datetime) -> float:
+        if profile is not None:
+            return _profile_load_kwh(
+                profile,
+                begin,
+                finish,
+                slot_minutes=slot_minutes,
+                fallback_kw=standby_kw,
+            )
+        return standby_kw * max(0.0, (finish - begin).total_seconds() / 3600.0)
+
+    def _load_kw(begin: dt.datetime, finish: dt.datetime) -> float:
+        if profile is not None:
+            return _profile_average_kw(
+                profile,
+                begin,
+                finish,
+                slot_minutes=slot_minutes,
+                fallback_kw=standby_kw,
+            )
+        return standby_kw
+
     available_kwh = max(0.0, (soc - min_soc) / 100.0 * capacity_kwh)
     export_cap_kwh: float | None = None
     if export_hours is not None and float(export_hours) > 0:
@@ -445,8 +483,7 @@ def build_plan(
     charge_avg = 0.0
     reference_avg = 0.0
     skipped_charge = False
-    net_charge_kw = charge_power_kw * rte - standby_kw
-    if soc < target_soc and net_charge_kw > 0 and capacity_kwh > 0:
+    if soc < target_soc and capacity_kwh > 0:
         n_charge = min(
             len(future),
             math.ceil(
@@ -461,15 +498,30 @@ def build_plan(
                 break
             candidate = _select_indices(indexed, n_charge, cheapest=True)
             start_slot = future[min(candidate)].time
-            pre_hours = max(0.0, (start_slot - now).total_seconds() / 3600.0)
+            stop_slot = future[max(candidate)].time + dt.timedelta(
+                minutes=slot_minutes
+            )
+            # The battery is drained by the house load between now and the first
+            # charge slot, so it has to start lower than the current state of
+            # charge would suggest.
             soc_start = min(
                 target_soc,
-                max(min_soc, soc - standby_kw * pre_hours / capacity_kwh * 100.0),
+                max(
+                    min_soc,
+                    soc - _drain_kwh(now, start_slot) / capacity_kwh * 100.0,
+                ),
             )
             stored_needed = (target_soc - soc_start) / 100.0 * capacity_kwh
-            n_new = min(
-                len(future),
-                max(0, math.ceil(stored_needed / net_charge_kw / slot_hours)),
+            # The load during the charge window eats into the net charge rate, so
+            # the window is sized from the real load there, not the flat standby.
+            net_charge_kw = charge_power_kw * rte - _load_kw(start_slot, stop_slot)
+            n_new = (
+                min(
+                    len(future),
+                    max(0, math.ceil(stored_needed / net_charge_kw / slot_hours)),
+                )
+                if net_charge_kw > 0
+                else 0
             )
             if n_new == n_charge:
                 break
@@ -545,13 +597,14 @@ def build_plan(
         notes.append(translate(lang, "plan.already_target", soc=soc))
     elif charge_idx:
         charged_kwh = len(charge_idx) * charge_power_kw * slot_hours
+        charge_stop = future[max(charge_idx)].time + dt.timedelta(minutes=slot_minutes)
         notes.append(
             translate(
                 lang,
                 "plan.charge_note",
                 soc=soc,
                 target=target_soc,
-                standby=standby_kw,
+                standby=_load_kw(now, charge_stop),
                 rte=rte * 100,
                 kwh=charged_kwh,
             )
@@ -579,7 +632,17 @@ def build_plan(
                 lang, "plan.available_note", avail=available_kwh, min_soc=min_soc
             )
         )
-    if standby_kw and float(standby_kw) > 0:
+    if profile is not None:
+        daily = _profile_daily_kwh(profile, slot_minutes=slot_minutes)
+        notes.append(
+            translate(
+                lang,
+                "plan.profile_note",
+                load=daily / 24.0,
+                kwh=daily,
+            )
+        )
+    elif standby_kw > 0:
         notes.append(translate(lang, "plan.standby_note", standby=standby_kw))
 
     planned: list[tuple[str, tuple[int, int], float]] = []
@@ -739,6 +802,7 @@ def forecast_soc(
     charge_power_kw: float | None = None,
     discharge_power_kw: float | None = None,
     base_load_kw: float = 0.0,
+    load_profile: Sequence[float] | None = None,
     step_minutes: int = SLOT_MINUTES,
     min_soc: float = 0.0,
     max_soc: float = 100.0,
@@ -766,6 +830,9 @@ def forecast_soc(
         power_kw if discharge_power_kw is None else max(0.0, float(discharge_power_kw))
     )
     base_load_kw = max(0.0, float(base_load_kw))
+    profile: list[float] | None = (
+        [max(0.0, float(value)) for value in load_profile] if load_profile else None
+    )
     rte = min(1.0, max(0.1, float(rte)))
     step = dt.timedelta(minutes=max(1, int(step_minutes)))
 
@@ -776,7 +843,20 @@ def forecast_soc(
     while moment < end:
         boundary = min(moment + step, end)
         hours = (boundary - moment).total_seconds() / 3600.0
-        delta = -base_load_kw * hours / capacity_kwh * 100.0
+        # The house load drains the battery every step. With a measured profile
+        # the load follows the time of day; without one the flat standby is used.
+        load_kw = (
+            _profile_average_kw(
+                profile,
+                moment,
+                boundary,
+                slot_minutes=step_minutes,
+                fallback_kw=base_load_kw,
+            )
+            if profile is not None
+            else base_load_kw
+        )
+        delta = -load_kw * hours / capacity_kwh * 100.0
         day = moment.replace(hour=0, minute=0, second=0, microsecond=0)
         weekday_bit = day_bit(day)
         for window in windows:

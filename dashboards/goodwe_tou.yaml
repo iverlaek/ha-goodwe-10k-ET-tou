@@ -238,6 +238,11 @@ views:
       - type: custom:goodwe-tou-deviation-card
         title: Afwijking
 
+      # The measured quarter-hour house load the planner uses instead of the flat
+      # standby, split into grid import and export: the real daily "duck curve".
+      - type: custom:goodwe-tou-profile-card
+        title: Verbruiksprofiel
+
       - type: entities
         title: Status
         show_header_toggle: false

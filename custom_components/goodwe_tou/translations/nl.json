@@ -57,7 +57,12 @@
           "log_size": "Grootte activiteitenlogboek (regels)",
           "min_cell_voltage": "Stopdrempel lage celspanning (mV, 0 = uit)",
           "tibber_prices": "Tibber-dagprijzen tonen (prijssensor)",
-          "tibber_home": "Tibber-huisnaam (leeg = eerste/enige huis)"
+          "tibber_home": "Tibber-huisnaam (leeg = eerste/enige huis)",
+          "profile_enabled": "Gebruik het gemeten verbruiksprofiel (kW per kwartier)",
+          "profile_days": "Profielvenster (dagen)",
+          "profile_load_entity": "Huisverbruiksensor (verbruiksprofiel)",
+          "profile_grid_entity": "Netvermogensensor (inkoop-/verkoopprofiel)",
+          "profile_grid_invert": "Keer het netteken om (positief = inkoop)"
         }
       }
     }

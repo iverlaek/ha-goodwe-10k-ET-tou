@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 
 from .activity import MAX_ENTRIES
 from .const import (
@@ -78,6 +79,8 @@ SERVICE_SET_WINDOWS = "set_windows"
 SERVICE_FORECAST_SOC = "forecast_soc"
 SERVICE_GET_ACTIVITY = "get_activity"
 SERVICE_GET_DEVIATIONS = "get_deviations"
+SERVICE_GET_PROFILE = "get_profile"
+SERVICE_REFRESH_PROFILE = "refresh_profile"
 
 _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
@@ -85,6 +88,7 @@ _PLANNER_FILE = "goodwe-tou-planner-card.js"
 _LOG_FILE = "goodwe-tou-log-card.js"
 _POWER_FILE = "goodwe-tou-power-card.js"
 _DEVIATION_FILE = "goodwe-tou-deviation-card.js"
+_PROFILE_FILE = "goodwe-tou-profile-card.js"
 _FRONTEND_KEY = "__frontend__"
 
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
@@ -206,6 +210,8 @@ SERVICE_GET_DEVIATIONS_SCHEMA = vol.Schema(
     }
 )
 
+SERVICE_GET_PROFILE_SCHEMA = vol.Schema({})
+
 
 def _coordinators(hass: HomeAssistant) -> list[GoodweTouCoordinator]:
     return [
@@ -237,6 +243,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, f"{_URL_PATH}/{_LOG_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_POWER_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_DEVIATION_FILE}")
+        add_extra_js_url(hass, f"{_URL_PATH}/{_PROFILE_FILE}")
     except Exception:
         _LOGGER.warning(
             "Could not register the GoodWe TOU Lovelace card", exc_info=True
@@ -277,7 +284,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_load_plan()
     await coordinator.async_load_retries()
     await coordinator.async_load_deviation()
+    await coordinator.async_load_profile()
     await coordinator.async_config_entry_first_refresh()
+
+    # Build the quarter-hour consumption profile from the recorder once at setup,
+    # then refresh it a few times a day. It is only a read of the statistics
+    # database, and a failure leaves the planner on its flat standby load.
+    try:
+        await coordinator.async_refresh_profile()
+    except Exception:  # pragma: no cover - never let the profile block setup
+        _LOGGER.warning("Could not build the consumption profile", exc_info=True)
 
     # The Tibber price sensor has its own 15-minute coordinator so the price card
     # keeps working when the inverter is unreachable, and so the cloud is not hit
@@ -324,6 +340,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_track_time_change(
             hass, _auto_replan, minute=_recheck_minutes(entry), second=0
         )
+    )
+
+    async def _refresh_profile(_now: object) -> None:
+        """Rebuild the consumption profile a few times a day."""
+        try:
+            await coordinator.async_refresh_profile()
+        except Exception:  # pragma: no cover - never let the scheduler die
+            _LOGGER.warning("Could not refresh the consumption profile", exc_info=True)
+
+    entry.async_on_unload(
+        async_track_time_interval(hass, _refresh_profile, dt.timedelta(hours=6))
     )
 
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -477,5 +504,38 @@ def _async_register_services(hass: HomeAssistant) -> None:
             SERVICE_GET_DEVIATIONS,
             _handle_get_deviations,
             schema=SERVICE_GET_DEVIATIONS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_PROFILE):
+
+        async def _handle_get_profile(call: ServiceCall) -> dict[str, Any]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
+            return coordinators[0].profile_summary()
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_PROFILE,
+            _handle_get_profile,
+            schema=SERVICE_GET_PROFILE_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_PROFILE):
+
+        async def _handle_refresh_profile(call: ServiceCall) -> dict[str, Any]:
+            coordinators = _coordinators(hass)
+            if not coordinators:
+                raise HomeAssistantError(translate(DEFAULT_LANGUAGE, "error.no_entry"))
+            profile = await coordinators[0].async_refresh_profile()
+            return profile or {}
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REFRESH_PROFILE,
+            _handle_refresh_profile,
+            schema=SERVICE_GET_PROFILE_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )

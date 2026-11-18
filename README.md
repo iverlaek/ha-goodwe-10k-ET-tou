@@ -102,6 +102,18 @@ automate them from scripts, automations and dashboards.
   be kept for 90 days. See the `sensor.goodwe_time_of_use_afwijking` sensor, the
   `goodwe_tou.get_deviations` service and the bundled **deviation card**
   (`custom:goodwe-tou-deviation-card`).
+- **A measured consumption profile instead of a guessed house load.** Rather than
+  one flat "1.8 kW" standby figure, the planner uses the **average power per
+  quarter hour** over the last two weeks, split into the house load (which the
+  battery covers) and the grid **import** and **export**. That is the real daily
+  rhythm — the *duck curve* of a home with solar — so the charge windows are sized
+  from what the house actually draws at those hours. The profile is built from the
+  recorder's 5-minute statistics (so it needs no extra storage: the raw history
+  already lives in Home Assistant), refreshed a few times a day, and falls back to
+  the flat standby figure whenever it is switched off or has no data yet. See the
+  `sensor.goodwe_time_of_use_verbruiksprofiel` sensor, the `goodwe_tou.get_profile`
+  / `goodwe_tou.refresh_profile` services and the bundled **profile card**
+  (`custom:goodwe-tou-profile-card`).
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - **Dutch or English**: chosen at installation and changeable in the options. It
@@ -157,7 +169,10 @@ and the Tibber price sensor (`tibber_prices`, on by default; `tibber_home` when
 your account has several homes). It also holds the [deviation
 tracking](#deviation-tracking) settings: `adaptive_load`, `weather_entity`,
 `load_entity`, `pv_power_entity`, `temp_coeff`, `degree_base_c` and
-`deviation_size`.
+`deviation_size`. It also holds the [consumption
+profile](#the-profile-card) settings: `profile_enabled` (on by default),
+`profile_days` (14), `profile_load_entity`, `profile_grid_entity` and
+`profile_grid_invert`.
 
 ### Language
 
@@ -199,6 +214,7 @@ With the default device name the entities are:
 | `sensor.goodwe_time_of_use_plan` | Last computed plan: number of windows, with `reasons` (per window) and `notes` as attributes |
 | `sensor.goodwe_time_of_use_afwijking` | Deviation log: number of hourly samples, with the learned model, the current assumed load, today's totals and the newest samples as attributes |
 | `sensor.goodwe_time_of_use_herpogingen` | Retry counter: how often a write had to be re-sent today (`total` = all-time, `last_attempts` / `last_time` = most recent retried write) |
+| `sensor.goodwe_time_of_use_verbruiksprofiel` | Consumption profile: house load in kWh per day, with the 96 quarter-hour `load` / `import` / `export` arrays (kW) and their daily totals as attributes |
 | `sensor.goodwe_time_of_use_stroomprijzen` | Tibber day-ahead prices (state = current price; `prices` attribute = the full list) |
 
 Entity IDs are derived from the device name, so they may differ if you rename the
@@ -472,6 +488,47 @@ sensor: sensor.goodwe_time_of_use_afwijking       # optional, refresh trigger
 limit: 200                                        # optional, samples fetched
 ```
 
+## The profile card
+
+`custom:goodwe-tou-profile-card` shows the measured consumption profile the
+planner uses as the house load. Instead of a single standby number it draws the
+average power in each of the **96 quarter hours of the day**, split into three
+curves:
+
+- **Huisverbruik** (blue) — the house load, which the battery covers in ECO mode.
+  This is the curve the planner uses to size the charge windows.
+- **Inkoop** (red) — what the house still buys from the grid (the meter drawing).
+- **Verkoop** (green) — what flows back to the grid (the meter feeding in).
+
+Together they show the real daily "duck curve" of a home with solar: a quiet
+night, a morning peak, a midday dip while the panels cover the house, and an
+evening peak. The panels at the top give the **daily totals** (house load, import
+and export in kWh) and the load's **peak** and **average**. The header reports how
+many days were actually measured — the recorder keeps a limited history, so the
+card tells you the real coverage (e.g. `10 of 14 days measured`) instead of
+pretending the full window is there.
+
+The profile is built from the recorder's **5-minute statistics** for the house
+consumption sensor and the grid power sensor, averaged per quarter of the *local*
+day and converted to kW. Nothing extra is stored: the raw history already lives in
+Home Assistant's recorder database. The card fetches the 96 × 3 values through the
+`goodwe_tou.get_profile` service (they are too many for a state attribute) and
+refreshes whenever the profile sensor changes:
+
+```yaml
+type: custom:goodwe-tou-profile-card
+title: Verbruiksprofiel                            # optional; " (Version x.y.z)" is appended
+prefix: goodwe_time_of_use                         # optional entity-id prefix
+sensor: sensor.goodwe_time_of_use_verbruiksprofiel # optional, refresh trigger
+language: en                                       # optional, overrides the language
+```
+
+The profile is controlled by four options (see **Configuration**): whether to use
+it at all, how many days to average over, which entity carries the house load and
+which carries the grid power (with a sign toggle for meters that report import as
+positive). `goodwe_tou.refresh_profile` rebuilds it on demand; otherwise the
+integration refreshes it at setup and every six hours.
+
 ## Cheapest hours
 
 The **Set cheapest hours** button (and the `goodwe_tou.set_cheapest_hours`
@@ -480,9 +537,12 @@ how much energy the battery still needs (from the state of charge, the battery
 capacity and the target state of charge) and fills the four windows with the
 cheapest charging hours and the most expensive discharging hours.
 
-The house's standby consumption and the GoodWe's power limits are taken into
-account: the battery charges at up to `charge_kw` (6 kW, AC + DC together) and
-discharges at up to `discharge_kw` (6 kW over AC). Discharging is capped at
+The house's load and the GoodWe's power limits are taken into account: the battery
+charges at up to `charge_kw` (6 kW, AC + DC together) and discharges at up to
+`discharge_kw` (6 kW over AC). By default the house load is the **measured
+quarter-hour profile** (see [The profile card](#the-profile-card)), so the charge
+windows are sized from what the house really draws at those hours; with the
+profile off it falls back to the flat `standby_kw`. Discharging is capped at
 `export_hours` at full power **per day**, so the rest of today gets its own
 discharge window instead of the whole budget being spent on tomorrow's peak, and
 a bad solar period cannot drain the battery so early that the house has to buy
@@ -593,7 +653,8 @@ notes:
 
 `goodwe_tou.forecast_soc` projects the battery state of charge from now until the
 end of tomorrow, following the Time-of-Use windows that are currently on the
-inverter. The house's standby consumption is drawn from the battery too, so the
+inverter. The house's load is drawn from the battery too — the measured
+quarter-hour profile when it is available, else the flat `standby_kw` — so the
 forecast shows the real drain. It is what the bundled card draws after the
 measured part of its graph:
 
@@ -647,11 +708,15 @@ written, `{n, start, stop, power, days}`). This is what the log card uses.
 
 ## Deviation tracking
 
-The planner assumes a constant house load (`standby_kw`). In reality that load
-moves with the weather: a cold day makes the air conditioner work harder, a wrong
-weather forecast means the real load drifts away from the plan, and the battery
-then runs flat earlier than planned. With `adaptive_load` on (the default) the
-integration watches the difference and corrects for it.
+Without a measured profile the planner assumes a constant house load
+(`standby_kw`). In reality that load moves with the weather: a cold day makes the
+air conditioner work harder, a wrong weather forecast means the real load drifts
+away from the plan, and the battery then runs flat earlier than planned. With
+`adaptive_load` on (the default) the integration watches the difference and
+corrects for it. (When the [measured consumption
+profile](#the-profile-card) is active the plan already follows the real daily
+rhythm, so this weather adjustment is skipped and only the deviation log is
+kept.)
 
 Every hour it records one compact sample of the **deviation** between the plan and
 reality, together with the variables that influence it:
@@ -989,6 +1054,11 @@ views:
       # it and the house-load model learned from it.
       - type: custom:goodwe-tou-deviation-card
         title: Afwijking
+
+      # The measured quarter-hour house load the planner uses instead of the flat
+      # standby, split into grid import and export: the real daily "duck curve".
+      - type: custom:goodwe-tou-profile-card
+        title: Verbruiksprofiel
 
       - type: entities
         title: Status

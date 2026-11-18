@@ -31,6 +31,7 @@ from custom_components.goodwe_tou.const import (
     CONF_LOG_SIZE,
     CONF_MIN_CELL_VOLTAGE,
     CONF_PRICE_SOURCE,
+    CONF_PROFILE_ENABLED,
     CONF_RECHECK_MINUTES,
     CONF_STANDBY_KW,
     CONF_TEMP_COEFF,
@@ -2018,3 +2019,140 @@ async def test_deviation_log_learns_a_house_load_model(
     assert coordinator._standby_setting({}) == pytest.approx(
         coordinator.effective_standby_kw()
     )
+
+
+# -- measured quarter-hour consumption profile -----------------------------
+
+
+def _stat_rows(values_w, start_local, step_minutes: int = 15):
+    """Recorder-style statistics rows (mean in watt) for one local day."""
+    rows = []
+    for i, value in enumerate(values_w):
+        moment = start_local + dt.timedelta(minutes=step_minutes * i)
+        rows.append(
+            {
+                "start": moment.timestamp(),
+                "end": (moment + dt.timedelta(minutes=step_minutes)).timestamp(),
+                "mean": value,
+            }
+        )
+    return rows
+
+
+def _patch_statistics(load_w, grid_w):
+    """Patch the recorder so the profile reads the given watt series."""
+
+    def _fake(hass, start_time, end_time, statistic_ids, period, units, types):
+        return {
+            "sensor.house_consumption": load_w,
+            "sensor.meter_active_power_total": grid_w,
+        }
+
+    return patch(
+        "homeassistant.components.recorder.statistics.statistics_during_period",
+        side_effect=_fake,
+    )
+
+
+@pytest.mark.asyncio
+async def test_profile_is_built_from_statistics(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """The profile is read from the recorder's 5-minute statistics, in kW."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 1 kW house load all day; the meter imports in the morning (negative) and
+    # exports in the afternoon (positive).
+    load = _stat_rows([1000.0] * 96, day_start)
+    grid = _stat_rows(
+        [-500.0] * 48 + [800.0] * 48,
+        day_start,
+    )
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        _patch_statistics(load, grid),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        response = await hass.services.async_call(
+            DOMAIN, "get_profile", {}, blocking=True, return_response=True
+        )
+
+    assert len(response["load"]) == 96
+    assert response["load"][0] == pytest.approx(1.0)  # kW, not watt
+    assert response["load_daily_kwh"] == pytest.approx(24.0)
+    assert response["import_daily_kwh"] == pytest.approx(0.5 * 12.0)
+    assert response["export_daily_kwh"] == pytest.approx(0.8 * 12.0)
+    assert response["days"] >= 1
+
+    sensor = hass.states.get("sensor.goodwe_time_of_use_verbruiksprofiel")
+    assert sensor is not None
+    assert float(sensor.state) == pytest.approx(24.0)
+    assert len(sensor.attributes["load"]) == 96
+
+
+@pytest.mark.asyncio
+async def test_profile_feeds_the_planner(
+    hass: HomeAssistant, entry: MockConfigEntry, store: list[int]
+):
+    """With a profile in place the planner plans from it and says so."""
+    now = dt.datetime.now(dt.UTC).astimezone()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+    prices = [
+        {
+            "time": (base + dt.timedelta(minutes=15 * i)).isoformat(),
+            "price": i / 100.0,
+        }
+        for i in range(96)
+    ]
+    hass.states.async_set(
+        "sensor.average_electricity_price",
+        "0.1",
+        {"prices": prices, "unit_of_measurement": "€/kWh"},
+    )
+    hass.states.async_set("sensor.battery_state_of_charge", "30")
+    hass.states.async_set("sensor.energy_production_today_remaining", "0")
+
+    load = _stat_rows([1200.0] * 96, day_start)
+    grid = _stat_rows([0.0] * 96, day_start)
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        _patch_statistics(load, grid),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sequence = coordinator._load_profile_sequence()
+    assert sequence is not None and len(sequence) == 96
+    assert sequence[0] == pytest.approx(1.2)
+
+    plan = coordinator._plan_cheapest_hours({})
+    text = " ".join(plan.notes)
+    assert "verbruiksprofiel" in text
+    assert "standby" not in text
+
+
+@pytest.mark.asyncio
+async def test_profile_can_be_disabled(
+    hass: HomeAssistant, store: list[int]
+):
+    """With the profile off the planner keeps its flat standby load."""
+    entry = _entry_with_options(hass, **{CONF_PROFILE_ENABLED: False})
+    now = dt.datetime.now(dt.UTC).astimezone()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    load = _stat_rows([1000.0] * 96, day_start)
+
+    with (
+        patch.object(GoodweUdpClient, "read_registers", side_effect=_read_from(store)),
+        _patch_statistics(load, []),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator._load_profile_sequence() is None
+    assert coordinator.profile_summary()["enabled"] is False

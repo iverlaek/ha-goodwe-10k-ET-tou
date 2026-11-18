@@ -50,6 +50,11 @@ from .const import (
     CONF_PV_ENTITY,
     CONF_PV_FACTOR,
     CONF_PV_POWER_ENTITY,
+    CONF_PROFILE_DAYS,
+    CONF_PROFILE_ENABLED,
+    CONF_PROFILE_GRID_ENTITY,
+    CONF_PROFILE_GRID_INVERT,
+    CONF_PROFILE_LOAD_ENTITY,
     CONF_RTE,
     CONF_SCAN_INTERVAL,
     CONF_SOC_ENTITY,
@@ -80,6 +85,11 @@ from .const import (
     DEFAULT_PV_ENTITY,
     DEFAULT_PV_FACTOR,
     DEFAULT_PV_POWER_ENTITY,
+    DEFAULT_PROFILE_DAYS,
+    DEFAULT_PROFILE_ENABLED,
+    DEFAULT_PROFILE_GRID_ENTITY,
+    DEFAULT_PROFILE_GRID_INVERT,
+    DEFAULT_PROFILE_LOAD_ENTITY,
     DEFAULT_RTE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SOC_ENTITY,
@@ -96,6 +106,8 @@ from .const import (
     GENERAL_WORK_MODE,
     MAX_DEVIATION_SIZE,
     MAX_LOG_SIZE,
+    MAX_PROFILE_DAYS,
+    MIN_PROFILE_DAYS,
     PRICE_SOURCE_TIBBER,
     WINDOWS,
     WORK_MODE_REGISTER,
@@ -114,6 +126,13 @@ from .goodwe_udp import (
     GoodweUdpClient,
 )
 from .i18n import resolve_language, translate
+from .profile import (
+    QUARTERS,
+    average_by_quarter,
+    covered_days,
+    daily_kwh,
+    split_grid,
+)
 from .optimizer import (
     Plan,
     build_plan,
@@ -264,6 +283,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plan": None,
             "deviation": [],
             "learned": None,
+            "profile": None,
             "retries": {"total": 0, "today": 0, "last_attempts": None, "last_time": None},
         }
         #: How often a write had to be re-sent because the flaky dongle did not
@@ -297,6 +317,15 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._deviation_bucket: dict[str, Any] | None = None
         #: The learned house-load model, or ``None`` while it is still learning.
         self._learned: dict[str, Any] | None = None
+        #: The measured quarter-hour consumption profile (load + import + export),
+        #: built from the recorder's 5-minute statistics. It replaces the flat
+        #: standby the planner used to assume, so the plan follows the real daily
+        #: rhythm (the "duck curve"). Persisted so the planner keeps working
+        #: right after a restart.
+        self._profile: dict[str, Any] | None = None
+        self._profile_store: Store = Store(
+            hass, 1, f"{DOMAIN}_profile_{entry.entry_id}"
+        )
         #: Whether the quarter-hour re-check may write a new plan by itself.
         self.auto_replan_enabled: bool = bool(
             entry.options.get(CONF_AUTO_REPLAN, DEFAULT_AUTO_REPLAN)
@@ -689,12 +718,162 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "pv_error_kwh": round(pv_actual - pv_forecast, 2) if pv_seen else None,
         }
 
+    # -- quarter-hour consumption profile ----------------------------------
+
+    def _profile_enabled(self) -> bool:
+        """Whether the planner should use the measured profile as house load."""
+        return bool(self._option(CONF_PROFILE_ENABLED, DEFAULT_PROFILE_ENABLED))
+
+    def _profile_days(self) -> int:
+        """How many days of history the profile averages over."""
+        value = int(self._option(CONF_PROFILE_DAYS, DEFAULT_PROFILE_DAYS))
+        return max(MIN_PROFILE_DAYS, min(MAX_PROFILE_DAYS, value))
+
+    def _profile_load_entity(self) -> str:
+        return str(self._option(CONF_PROFILE_LOAD_ENTITY, DEFAULT_PROFILE_LOAD_ENTITY))
+
+    def _profile_grid_entity(self) -> str:
+        return str(self._option(CONF_PROFILE_GRID_ENTITY, DEFAULT_PROFILE_GRID_ENTITY))
+
+    def _profile_grid_invert(self) -> bool:
+        return bool(self._option(CONF_PROFILE_GRID_INVERT, DEFAULT_PROFILE_GRID_INVERT))
+
+    def _load_profile_sequence(self) -> list[float] | None:
+        """The 96 quarter-hour house loads in kW, or ``None`` for the flat load.
+
+        ``None`` means the planner keeps using its flat standby: either the profile
+        is switched off or there is not a complete profile yet (fresh install, or
+        the recorder has no statistics for the sensor).
+        """
+        if not self._profile_enabled():
+            return None
+        load = (self._profile or {}).get("load")
+        if not isinstance(load, list) or len(load) != QUARTERS:
+            return None
+        return [float(value) for value in load]
+
+    async def async_load_profile(self) -> None:
+        """Load the persisted profile (if any) into memory."""
+        try:
+            stored = await self._profile_store.async_load()
+        except Exception:  # pragma: no cover - corrupt/unreadable store
+            _LOGGER.warning("Could not load the consumption profile", exc_info=True)
+            return
+        if isinstance(stored, dict):
+            self._profile = stored
+        self._publish(self.data)
+
+    @staticmethod
+    def _profile_points(rows: Any) -> list[tuple[dt.datetime, float]]:
+        """Turn recorder statistics rows into ``(local moment, mean)`` points."""
+        points: list[tuple[dt.datetime, float]] = []
+        for row in rows or []:
+            start = row.get("start")
+            mean = row.get("mean")
+            if start is None or mean is None:
+                continue
+            moment = dt.datetime.fromtimestamp(float(start), dt.UTC).astimezone()
+            points.append((moment, float(mean)))
+        return points
+
+    def _collect_profile(self) -> dict[str, Any] | None:
+        """Build the profile from the recorder's 5-minute statistics (executor).
+
+        This is blocking (database) work, so it runs in the executor. The power
+        statistics are means in watt; they are averaged per quarter of the *local*
+        day and turned into kW, because the profile is keyed by the local time of
+        day. The GoodWe meter reports a negative value while drawing from the
+        grid, so the import/export split honours that (or ``grid_invert``).
+        """
+        if not self._profile_enabled():
+            return None
+        load_entity = self._profile_load_entity()
+        grid_entity = self._profile_grid_entity()
+        days = self._profile_days()
+        try:
+            from homeassistant.components.recorder import statistics as recorder_stats
+        except Exception:  # pragma: no cover - recorder always present in HA
+            return None
+        now = dt.datetime.now(dt.UTC).astimezone()
+        start = now - dt.timedelta(days=days)
+        try:
+            result = recorder_stats.statistics_during_period(
+                self.hass,
+                start,
+                now,
+                statistic_ids={load_entity, grid_entity},
+                period="5minute",
+                units=None,
+                types={"mean"},
+            )
+        except Exception:
+            _LOGGER.debug("Could not read statistics for the profile", exc_info=True)
+            return None
+
+        load_points = self._profile_points(result.get(load_entity))
+        grid_points = self._profile_points(result.get(grid_entity))
+        if not load_points and not grid_points:
+            return None
+
+        def _kw(values: list[float]) -> list[float]:
+            return [round(value / 1000.0, 4) for value in values]
+
+        load_kw = _kw(average_by_quarter(load_points))
+        imports, exports = split_grid(
+            grid_points, invert=self._profile_grid_invert()
+        )
+        import_kw = _kw(average_by_quarter(imports))
+        export_kw = _kw(average_by_quarter(exports))
+        return {
+            "load": load_kw,
+            "import": import_kw,
+            "export": export_kw,
+            "load_daily_kwh": daily_kwh(load_kw),
+            "import_daily_kwh": daily_kwh(import_kw),
+            "export_daily_kwh": daily_kwh(export_kw),
+            "days": covered_days(load_points or grid_points),
+            "window_days": days,
+            "load_entity": load_entity,
+            "grid_entity": grid_entity,
+            "grid_invert": self._profile_grid_invert(),
+            "updated": now.isoformat(timespec="seconds"),
+        }
+
+    async def async_refresh_profile(self) -> dict[str, Any] | None:
+        """Rebuild the profile from the recorder and publish it.
+
+        Runs the blocking database read in the executor. A failure leaves the
+        previous profile in place, so a hiccup never drops the planner back to the
+        flat load mid-day.
+        """
+        try:
+            profile = await self.hass.async_add_executor_job(self._collect_profile)
+        except Exception:  # pragma: no cover - executor/DB hiccups
+            _LOGGER.warning("Could not build the consumption profile", exc_info=True)
+            return self._profile
+        if profile is not None:
+            self._profile = profile
+            self._profile_store.async_delay_save(lambda: dict(profile), 2.0)
+        self._publish(self.data)
+        return self._profile
+
+    def profile_summary(self) -> dict[str, Any]:
+        """The measured profile plus its totals, for the sensor and the card."""
+        summary = dict(self._profile or {})
+        summary["enabled"] = self._profile_enabled()
+        summary["window_days"] = self._profile_days()
+        summary.setdefault("load", [])
+        summary.setdefault("import", [])
+        summary.setdefault("export", [])
+        return summary
+
     def _publish(self, data: dict[str, Any]) -> None:
         """Push fresh data to the entities, including the current activity log."""
         data["activity"] = list(self._activity)
         data["plan"] = self._plan
         data["deviation"] = list(self._deviation)
         data["learned"] = self._learned
+        data["profile"] = self.profile_summary()
         data["retries"] = self.retry_summary()
         self.async_set_updated_data(data)
 
@@ -782,6 +961,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data["plan"] = self._plan
         data["deviation"] = list(self._deviation)
         data["learned"] = self._learned
+        data["profile"] = self.profile_summary()
         data["retries"] = self.retry_summary()
         return data
 
@@ -1428,6 +1608,10 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc = self._float_state(soc_entity, target_soc)
         pv_remaining = self._float_state(pv_entity, 0.0)
 
+        # The measured quarter-hour load profile replaces the flat standby when we
+        # have one, so the plan follows the real daily rhythm.
+        load_profile = self._load_profile_sequence()
+
         now = dt.datetime.now(dt.UTC).astimezone()
         plan = build_plan(
             slots,
@@ -1440,6 +1624,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             min_soc=min_soc,
             pv_credit_kwh=pv_remaining * pv_factor,
             standby_kw=standby_kw,
+            load_profile=load_profile,
             export_hours=None if export_hours is None else float(export_hours),
             rte=rte,
             charge_windows=charge_windows,
@@ -1448,8 +1633,13 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             lang=self.language,
         )
         # Explain the weather adjustment, so the number in the standby note does
-        # not look like a mystery. Skipped when the user pinned standby_kw.
-        if self._adaptive() and CONF_STANDBY_KW not in overrides:
+        # not look like a mystery. Skipped when the user pinned standby_kw or when
+        # the measured profile already carries the real load.
+        if (
+            self._adaptive()
+            and load_profile is None
+            and CONF_STANDBY_KW not in overrides
+        ):
             _, feels, below = self._weather_now()
             if feels is not None and below > 0:
                 base, coeff = self._load_model()
@@ -1538,6 +1728,7 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             charge_power_kw=charge_kw,
             discharge_power_kw=discharge_kw,
             base_load_kw=standby_kw,
+            load_profile=self._load_profile_sequence(),
             min_soc=min_soc,
             rte=rte,
         )
