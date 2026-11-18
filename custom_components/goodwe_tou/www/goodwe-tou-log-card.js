@@ -21,7 +21,7 @@
  *   language: en                              # optional, overrides the language
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const LIMIT_DEFAULT = 200;
 

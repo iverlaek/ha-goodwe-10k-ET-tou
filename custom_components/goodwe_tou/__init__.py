@@ -80,6 +80,7 @@ _URL_PATH = "/goodwe_tou"
 _CARD_FILE = "goodwe-tou-card.js"
 _PLANNER_FILE = "goodwe-tou-planner-card.js"
 _LOG_FILE = "goodwe-tou-log-card.js"
+_POWER_FILE = "goodwe-tou-power-card.js"
 _FRONTEND_KEY = "__frontend__"
 
 SERVICE_SET_CHEAPEST_HOURS_SCHEMA = vol.Schema(
@@ -222,6 +223,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, f"{_URL_PATH}/{_CARD_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_PLANNER_FILE}")
         add_extra_js_url(hass, f"{_URL_PATH}/{_LOG_FILE}")
+        add_extra_js_url(hass, f"{_URL_PATH}/{_POWER_FILE}")
     except Exception:
         _LOGGER.warning(
             "Could not register the GoodWe TOU Lovelace card", exc_info=True

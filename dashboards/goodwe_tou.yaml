@@ -13,6 +13,20 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
+      # Live "energy display": a big circle whose ring is the battery SOC with
+      # the current grid power in the middle (purple while drawing from the
+      # grid, green while feeding back), plus two smaller circles for the
+      # lowest/highest battery cell temperature and voltage.
+      - type: custom:goodwe-tou-power-card
+        title: GoodWe vermogen
+        grid_entity: sensor.meter_active_power_total
+        invert_grid: false
+        soc_entity: sensor.battery_state_of_charge
+        min_temp_entity: sensor.battery_min_cell_temperature
+        max_temp_entity: sensor.battery_max_cell_temperature
+        min_volt_entity: sensor.battery_min_cell_voltage
+        max_volt_entity: sensor.battery_max_cell_voltage
+
       - type: custom:goodwe-tou-card
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge

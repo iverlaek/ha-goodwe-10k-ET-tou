@@ -44,6 +44,11 @@ automate them from scripts, automations and dashboards.
   below it a **battery state-of-charge graph** that shows the measured SoC for the
   last `hours_back` hours and continues with the **forecast** SoC (if the plan on
   the inverter is followed) until the end of tomorrow.
+- A **power card** (`custom:goodwe-tou-power-card`) — a live *energy display*
+  like the HomeWizard: one big circle whose ring is the **battery SOC** with the
+  **current grid power** in the middle (**purple** while drawing from the grid,
+  **green** while feeding back), and two smaller circles for the lowest/highest
+  **cell temperature** and **cell voltage**.
 - A **planner card** (`custom:goodwe-tou-planner-card`) with two views: a
   *now → midnight tomorrow* timeline with draggable bars at the very top, and a
   *whole-week* calendar list of the seven days. Each window has a single power
@@ -219,6 +224,40 @@ hours_back: 24                                # optional, measured hours shown
 The graph needs the recorder (it reads history through the HA API) and the
 `goodwe_tou.forecast_soc` service. A ready-to-paste dashboard is in
 [`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml).
+
+## The power card
+
+`custom:goodwe-tou-power-card` is a **read-only**, live widget styled after the
+HomeWizard Energy Display:
+
+- one **big circle** whose ring is the **battery state of charge** (0–100%), with
+  the **current grid power** in the middle. The circle is **purple** while the
+  house draws from the grid (afname) and **green** while it feeds back
+  (teruglevering); below 25 W it is grey ("in balans");
+- two **smaller circles** next to it — the lowest/highest **cell temperature**
+  (`12–27 °C`) and the lowest/highest **cell voltage** (`3.18–3.31 V`).
+
+The big circle is 50% larger than the two smaller ones. It is served at
+`/goodwe_tou/goodwe-tou-power-card.js` and loaded automatically:
+
+```yaml
+type: custom:goodwe-tou-power-card
+title: GoodWe vermogen                        # optional; " (Version x.y.z)" is appended
+grid_entity: sensor.meter_active_power_total  # optional; defaults to the GoodWe meter
+invert_grid: false                            # see "Grid sign" below
+soc_entity: sensor.battery_state_of_charge
+min_temp_entity: sensor.battery_min_cell_temperature
+max_temp_entity: sensor.battery_max_cell_temperature
+min_volt_entity: sensor.battery_min_cell_voltage
+max_volt_entity: sensor.battery_max_cell_voltage
+language: nl                                  # optional, overrides the language
+```
+
+**Grid sign.** The GoodWe meter (`sensor.meter_active_power_total`) reports a
+*negative* value while the house draws from the grid, so the card's default
+(`invert_grid: false`) is correct for it. For a meter that reports consumption as
+*positive*, such as a P1/DSMR meter (`sensor.p1_meter_power`), set
+`invert_grid: true`.
 
 ## The planner card
 
@@ -582,9 +621,9 @@ automation:
 ## A dashboard
 
 A ready-to-paste dashboard is in
-[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the
-read-only overview, the planner, the Tibber price card, the manual
-charge/discharge buttons and the activity log. Create a dashboard
+[`dashboards/goodwe_tou.yaml`](dashboards/goodwe_tou.yaml). It shows the live
+power card, the read-only overview, the planner, the Tibber price card, the
+manual charge/discharge buttons and the activity log. Create a dashboard
 (**Settings → Dashboards → Add dashboard → New dashboard from scratch**), open
 the **raw configuration editor** and paste this in:
 
@@ -595,6 +634,15 @@ views:
     path: tou
     icon: mdi:battery-clock-outline
     cards:
+      - type: custom:goodwe-tou-power-card
+        title: GoodWe vermogen
+        grid_entity: sensor.meter_active_power_total
+        soc_entity: sensor.battery_state_of_charge
+        min_temp_entity: sensor.battery_min_cell_temperature
+        max_temp_entity: sensor.battery_max_cell_temperature
+        min_volt_entity: sensor.battery_min_cell_voltage
+        max_volt_entity: sensor.battery_max_cell_voltage
+
       - type: custom:goodwe-tou-card
         title: GoodWe Time-of-Use
         soc_entity: sensor.battery_state_of_charge
