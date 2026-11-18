@@ -48,7 +48,8 @@ automate them from scripts, automations and dashboards.
   calendar of the current week (ma…zo) with the windows that run on each day, and
   below it a **battery state-of-charge graph** that shows the measured SoC for the
   last `hours_back` hours and continues with the **forecast** SoC (if the plan on
-  the inverter is followed) until the end of tomorrow.
+  the inverter is followed) until the end of tomorrow, with a vertical gridline
+  every four hours and a hover readout of the time and SoC.
 - A **power card** (`custom:goodwe-tou-power-card`) — a live *energy display*
   like the HomeWizard: one big circle whose ring is the **battery SOC** with the
   **current grid power** in the middle (**purple** while drawing from the grid,
@@ -267,7 +268,9 @@ battery:
 - below it a **battery state-of-charge graph**: the *measured* SoC (solid line) for
   the last `hours_back` hours, continuing with the *forecast* SoC (dashed orange)
   until the end of tomorrow. The forecast follows the windows that are on the
-  inverter right now, so it shows what you get if you leave the plan as it is.
+  inverter right now, so it shows what you get if you leave the plan as it is. A
+  **vertical gridline** marks every four hours, and **hovering** the graph shows
+  the time and state of charge of the nearest measured or forecast point.
 
 It has no sliders, buttons or switches — editing happens in the planner card. It
 is served at `/goodwe_tou/goodwe-tou-card.js` and loaded automatically, so you only

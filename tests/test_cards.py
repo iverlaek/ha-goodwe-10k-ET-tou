@@ -47,6 +47,18 @@ def test_card_registers_its_element(filename: str, element: str) -> None:
     assert f'customElements.define("{element}"' in text
 
 
+def test_overview_card_has_4h_gridlines_and_hover() -> None:
+    text = (_WWW / "goodwe-tou-card.js").read_text(encoding="utf-8")
+    # A vertical gridline every four hours on the SoC graph.
+    assert "GRID_HOURS = 4" in text
+    assert "_gridMoments" in text
+    # Hovering shows the time and value of the nearest point.
+    assert "mousemove" in text
+    assert "mouseleave" in text
+    assert "_updateHover" in text
+    assert "tooltip" in text
+
+
 def test_power_card_defaults() -> None:
     text = (_WWW / "goodwe-tou-power-card.js").read_text(encoding="utf-8")
     # The GoodWe meter reports a negative value while drawing from the grid.

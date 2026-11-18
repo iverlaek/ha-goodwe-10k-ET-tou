@@ -8,7 +8,9 @@
  *   - below it a battery state-of-charge graph: the measured SoC for the last
  *     `hours_back` hours, continuing with the *forecast* SoC until the end of
  *     tomorrow. The forecast follows the windows that are on the inverter right
- *     now, so it shows what you get if you leave the plan as it is.
+ *     now, so it shows what you get if you leave the plan as it is. A vertical
+ *     gridline marks every four hours, and hovering the graph shows the time
+ *     and state of charge of the nearest point.
  *
  * The card is read-only; editing happens in the planner card
  * (`custom:goodwe-tou-planner-card`).
@@ -23,7 +25,7 @@
  *   language: en                                  # optional, overrides the language
  */
 
-const CARD_VERSION = "1.5.2";
+const CARD_VERSION = "1.6.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
 const HOURS_BACK_DEFAULT = 24;
@@ -31,6 +33,8 @@ const WINDOW_COUNT = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const SVG_NS = "http://www.w3.org/2000/svg";
 const CHART_HEIGHT = 190;
+// A vertical gridline is drawn at every multiple of this many hours.
+const GRID_HOURS = 4;
 
 // Everything the card says, per language. The Dutch table mirrors the original
 // card text exactly; the English table is the translation. A value may be a
@@ -97,6 +101,7 @@ const addDays = (date, days) => {
 };
 const weekdayKey = (date) => DAY_KEYS[(date.getDay() + 6) % 7];
 const fmtHM = (time) => `${pad(time.h)}:${pad(time.m)}`;
+const fmtClock = (date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 const parseHM = (text) => {
   const parts = String(text || "0:0").split(":");
   return {
@@ -162,7 +167,26 @@ const STYLES = `
   .legend .measured .swatch { border-top-color: var(--primary-color, #03a9f4); }
   .legend .forecast .swatch { border-top-color: #ff9800; border-top-style: dashed; }
 
-  svg.chart { display: block; width: 100%; overflow: visible; }
+  svg.chart { display: block; width: 100%; overflow: visible; cursor: crosshair; }
+  .chartwrap { position: relative; }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    transform: translate(-50%, -130%);
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    border: 1px solid var(--divider-color);
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: .74rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+    opacity: 0;
+    transition: opacity .08s linear;
+    z-index: 2;
+  }
+  .tooltip.show { opacity: 1; }
   .note { font-size: .74rem; color: var(--secondary-text-color); margin-top: 4px; }
   .error { color: var(--error-color, #d32f2f); font-size: .8rem; margin-top: 8px; }
 `;
@@ -181,6 +205,10 @@ class GoodweTouCard extends HTMLElement {
     this._fetching = false;
     this._lang = "nl";
     this._langOverride = null;
+    this._hoverPos = null;
+    this._geom = null;
+    this._hoverPoints = [];
+    this._hoverGroup = null;
   }
 
   setConfig(config) {
@@ -266,7 +294,10 @@ class GoodweTouCard extends HTMLElement {
             <span class="forecast"><span class="swatch"></span>${this._t("forecast")}</span>
           </span>
         </div>
-        <svg class="chart" id="chart" preserveAspectRatio="none"></svg>
+        <div class="chartwrap" id="chartwrap">
+          <svg class="chart" id="chart" preserveAspectRatio="none"></svg>
+          <div class="tooltip" id="tooltip"></div>
+        </div>
         <div class="note" id="note"></div>
         <div class="error" id="error"></div>
       </ha-card>
@@ -276,9 +307,20 @@ class GoodweTouCard extends HTMLElement {
     } (Version ${CARD_VERSION})`;
     this._weekEl = root.querySelector("#week");
     this._chartEl = root.querySelector("#chart");
+    this._tooltipEl = root.querySelector("#tooltip");
     this._noteEl = root.querySelector("#note");
     this._errorEl = root.querySelector("#error");
     this._built = true;
+
+    // Hover: map the pointer onto the chart and show the nearest value.
+    this._chartEl.addEventListener("mousemove", (event) => this._onChartMove(event));
+    this._chartEl.addEventListener("mouseleave", () => this._onChartLeave());
+    this._chartEl.addEventListener(
+      "touchmove",
+      (event) => this._onChartMove(event.touches && event.touches[0]),
+      { passive: true }
+    );
+    this._chartEl.addEventListener("touchend", () => this._onChartLeave());
 
     if (typeof ResizeObserver === "function") {
       this._resizeObserver = new ResizeObserver(() => this._renderChart());
@@ -500,6 +542,36 @@ class GoodweTouCard extends HTMLElement {
       host.appendChild(label);
     }
 
+    // Vertical grid every GRID_HOURS hours, with a small time label. The
+    // midnight line already carries a day label ("vandaag"/"morgen"), so its
+    // tick label is skipped to keep the two from overlapping.
+    for (const [moment, isDayBoundary] of this._gridMoments(t0, t1)) {
+      const px = x(moment);
+      if (px < padL - 0.5 || px > padL + plotW + 0.5) continue;
+      host.appendChild(
+        svgEl("line", {
+          x1: px,
+          y1: padT,
+          x2: px,
+          y2: padT + plotH,
+          stroke: "var(--divider-color)",
+          "stroke-width": 0.5,
+          opacity: 0.6,
+        })
+      );
+      if (isDayBoundary) continue;
+      if (px < padL + 14 || px > padL + plotW - 14) continue;
+      const label = svgEl("text", {
+        x: px,
+        y: padT + plotH + 11,
+        "text-anchor": "middle",
+        "font-size": "9",
+        fill: "var(--secondary-text-color)",
+      });
+      label.textContent = `${pad(moment.getHours())}:00`;
+      host.appendChild(label);
+    }
+
     // Day boundaries.
     for (const [moment, name] of [
       [startOfDay(now), this._t("today")],
@@ -541,22 +613,20 @@ class GoodweTouCard extends HTMLElement {
       })
     );
 
+    const history = this._history.filter((point) => point.t >= t0 && point.t <= now);
+    const forecast = this._forecast.filter((point) => point.t >= now && point.t <= t1);
     this._drawSeries(
       host,
-      this._history.filter((point) => point.t >= t0 && point.t <= now),
+      history,
       x,
       y,
       "var(--primary-color, #03a9f4)",
       false
     );
-    this._drawSeries(
-      host,
-      this._forecast.filter((point) => point.t >= now && point.t <= t1),
-      x,
-      y,
-      "#ff9800",
-      true
-    );
+    this._drawSeries(host, forecast, x, y, "#ff9800", true);
+
+    // Points the hover readout can snap to.
+    this._hoverPoints = [...history, ...forecast].sort((a, b) => a.t - b.t);
 
     // While the forecast is still being computed, mark that part in orange.
     if (this._forecastLoading && !this._forecast.length) {
@@ -597,6 +667,116 @@ class GoodweTouCard extends HTMLElement {
         this._noteEl.textContent = "";
       }
     }
+
+    // Remember the geometry so the hover handler can map the pointer back to a
+    // time and value, then re-apply (or clear) the readout. The crosshair group
+    // goes on top of everything else in the chart.
+    this._hoverGroup = svgEl("g", {});
+    host.appendChild(this._hoverGroup);
+    this._geom = { width, padL, padR, padT, padB, plotW, plotH, t0, t1, span, x, y };
+    if (this._hoverPos) this._updateHover();
+    else this._hideHover();
+  }
+
+  // The moments (local) at which a vertical gridline is drawn: every
+  // GRID_HOURS hours between t0 and t1. Each is paired with whether it is also
+  // a day boundary (midnight), where the day label already covers the tick.
+  _gridMoments(t0, t1) {
+    const moments = [];
+    const start = startOfDay(t0);
+    const dayBoundaries = [startOfDay(new Date()), startOfDay(addDays(new Date(), 1))];
+    const isBoundary = (moment) =>
+      dayBoundaries.some((day) => day.getTime() === moment.getTime());
+    for (let day = 0; day < 31; day++) {
+      const base = addDays(start, day);
+      if (base.getTime() > t1.getTime()) break;
+      for (let hour = 0; hour < 24; hour += GRID_HOURS) {
+        const moment = new Date(base);
+        moment.setHours(hour, 0, 0, 0);
+        if (moment.getTime() < t0.getTime() || moment.getTime() > t1.getTime()) continue;
+        moments.push([moment, isBoundary(moment)]);
+      }
+    }
+    return moments;
+  }
+
+  _onChartMove(event) {
+    if (!event) return;
+    this._hoverPos = { clientX: event.clientX, clientY: event.clientY };
+    this._updateHover();
+  }
+
+  _onChartLeave() {
+    this._hoverPos = null;
+    this._hideHover();
+  }
+
+  // Snap the pointer to the nearest measured/forecast point and show its time
+  // and state of charge in the tooltip.
+  _updateHover() {
+    const geom = this._geom;
+    const host = this._chartEl;
+    const tooltip = this._tooltipEl;
+    const points = this._hoverPoints;
+    if (!geom || !host || !tooltip || !this._hoverPos) return;
+    if (!points || !points.length) return;
+    const rect = host.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const vx = ((this._hoverPos.clientX - rect.left) / rect.width) * geom.width;
+    const clamped = clamp(vx, geom.padL, geom.padL + geom.plotW);
+    const target =
+      geom.t0.getTime() + ((clamped - geom.padL) / geom.plotW) * geom.span;
+
+    let best = points[0];
+    let bestDelta = Infinity;
+    for (const point of points) {
+      const delta = Math.abs(point.t.getTime() - target);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = point;
+      }
+    }
+
+    const px = geom.x(best.t);
+    const py = geom.y(best.v);
+    const group = this._hoverGroup;
+    if (group) {
+      group.replaceChildren();
+      group.appendChild(
+        svgEl("line", {
+          x1: px,
+          y1: geom.padT,
+          x2: px,
+          y2: geom.padT + geom.plotH,
+          stroke: "var(--primary-text-color)",
+          "stroke-width": 1,
+          opacity: 0.5,
+        })
+      );
+      group.appendChild(
+        svgEl("circle", {
+          cx: px,
+          cy: py,
+          r: 3.5,
+          fill: best.t > new Date() ? "#ff9800" : "var(--primary-color, #03a9f4)",
+          stroke: "var(--card-background-color, #fff)",
+          "stroke-width": 1.5,
+        })
+      );
+    }
+
+    tooltip.textContent = `${fmtClock(best.t)}  ${Math.round(best.v)}%`;
+    const left = clamp((px / geom.width) * rect.width, 30, rect.width - 30);
+    const top = (py / CHART_HEIGHT) * rect.height;
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.classList.add("show");
+  }
+
+  _hideHover() {
+    if (this._hoverGroup) this._hoverGroup.replaceChildren();
+    if (this._tooltipEl) this._tooltipEl.classList.remove("show");
   }
 
   _drawSeries(host, points, x, y, color, dashed) {
