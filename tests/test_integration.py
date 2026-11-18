@@ -509,6 +509,15 @@ async def test_cheapest_hours_service(
     assert any(p < 0 for p in powers), powers
     assert any(p > 0 for p in powers), powers
 
+    # The manual "set cheapest hours" write logs the plan's explanation, which
+    # includes the battery-cost and export-spread calculation.
+    entry_log = hass.states.get("sensor.goodwe_time_of_use_activity_log").attributes[
+        "entries"
+    ][0]
+    assert entry_log["action"] == "cheapest_hours"
+    assert "batterijkosten" in entry_log["reason"]
+    assert "spread" in entry_log["reason"]
+
 
 @pytest.mark.asyncio
 async def test_calculate_cheapest_hours_service_returns_without_writing(

@@ -97,6 +97,24 @@ CATALOG: dict[str, dict[str, str]] = {
             "Batterij {soc:.0f}%; er zijn nu geen goedkope uren om naar het doel "
             "{target:.0f}% te laden."
         ),
+        "plan.battery_cost_note": (
+            "Inkoopprijs is met \u20ac{cost:.3f}/kWh verhoogd voor "
+            "batterijkosten. Terugleveren uit de batterij gebeurt alleen als de "
+            "spread (verkoopprijs \u2212 inkoopprijs) minstens "
+            "\u20ac{spread:.2f}/kWh is."
+        ),
+        "plan.export_spread_note": (
+            "Terugleveren toegestaan: de duurste uren halen "
+            "\u20ac{price:.3f}/kWh; de spread van \u20ac{actual:.3f}/kWh "
+            "(verkoopprijs \u2212 inkoop \u20ac{buy:.3f}/kWh) is minstens "
+            "\u20ac{spread:.2f}/kWh."
+        ),
+        "plan.export_skipped": (
+            "Terugleveren overgeslagen: het duurste uur haalt "
+            "\u20ac{best:.3f}/kWh; de spread van \u20ac{actual:.3f}/kWh "
+            "(verkoopprijs \u2212 inkoop \u20ac{buy:.3f}/kWh) is minder dan "
+            "\u20ac{spread:.2f}/kWh."
+        ),
         "plan.pv_note": (
             "PV-prognose levert nog {pv:.1f} kWh voor niets. Dat verlaagt "
             "je inkoop overdag, dus laden we de batterij 's nachts goedkoop vol "
@@ -249,6 +267,21 @@ CATALOG: dict[str, dict[str, str]] = {
         "plan.no_cheap_hours": (
             "Battery {soc:.0f}%; there are no cheap hours right now to charge "
             "towards the {target:.0f}% target."
+        ),
+        "plan.battery_cost_note": (
+            "The purchase price includes \u20ac{cost:.3f}/kWh for battery "
+            "costs. The battery only exports when the spread (selling price "
+            "\u2212 purchase price) is at least \u20ac{spread:.2f}/kWh."
+        ),
+        "plan.export_spread_note": (
+            "Export allowed: the most expensive hours reach \u20ac{price:.3f}/kWh; "
+            "the spread of \u20ac{actual:.3f}/kWh (selling price \u2212 purchase "
+            "\u20ac{buy:.3f}/kWh) is at least \u20ac{spread:.2f}/kWh."
+        ),
+        "plan.export_skipped": (
+            "Export skipped: the most expensive hour reaches \u20ac{best:.3f}/kWh; "
+            "the spread of \u20ac{actual:.3f}/kWh (selling price \u2212 purchase "
+            "\u20ac{buy:.3f}/kWh) is below \u20ac{spread:.2f}/kWh."
         ),
         "plan.pv_note": (
             "The PV forecast still delivers {pv:.1f} kWh for free. That lowers "

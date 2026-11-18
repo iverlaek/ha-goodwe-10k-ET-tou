@@ -1759,13 +1759,18 @@ class GoodweTouCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # quarter-hour re-check sees the difference and sends the plan again.
         mapping = self._registers_for(after)
         mapping.update(self._export_registers(overrides))
+        # A manual "Set cheapest hours" has no reason of its own, so log the
+        # plan's explanation. That is where the battery-cost and export-spread
+        # calculation lives, and it makes the activity log show why the windows
+        # were chosen (the auto-replan path passes its own, larger reason).
+        logged_reason = reason if reason is not None else plan.summary
         await self._logged(
             "set_windows",
             action,
             lambda: self._write_verified(mapping),
             changes=changes,
             windows=targets,
-            reason=reason,
+            reason=logged_reason,
             plan=True,
         )
         return plan

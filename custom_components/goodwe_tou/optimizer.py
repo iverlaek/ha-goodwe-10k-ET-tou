@@ -17,6 +17,9 @@ The strategy is cost-aware:
   up to an export cap, so the battery is never emptied so early that the house
   has to buy expensive power later. The house's standby consumption is taken
   into account so the plan is honest about what the battery really delivers.
+  Purchased electricity is priced a few cents higher to cover battery wear, and
+  the battery only exports when the spread over that buy price clears a minimum
+  (20 ct/kWh by default).
 * Every choice is explained in a human readable reason, which the planner card
   shows next to the plan.
 
@@ -31,10 +34,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from .const import (
+    DEFAULT_BATTERY_COST_PER_KWH,
     DEFAULT_CAPACITY_KWH,
     DEFAULT_CHARGE_KW,
     DEFAULT_DISCHARGE_KW,
     DEFAULT_EXPORT_HOURS,
+    DEFAULT_EXPORT_MIN_SPREAD,
     DEFAULT_LANGUAGE,
     DEFAULT_MIN_SOC,
     DEFAULT_POWER_KW,
@@ -383,6 +388,8 @@ def build_plan(
     load_profile: Sequence[float] | None = None,
     export_hours: float | None = DEFAULT_EXPORT_HOURS,
     rte: float = DEFAULT_RTE,
+    battery_cost_per_kwh: float = DEFAULT_BATTERY_COST_PER_KWH,
+    export_min_spread: float = DEFAULT_EXPORT_MIN_SPREAD,
     max_windows: int = len(WINDOWS),
     charge_windows: int = 2,
     discharge_windows: int = 2,
@@ -409,6 +416,13 @@ def build_plan(
     ``charge_price / rte < later_buy_price``. When the spread does not cover the
     losses the plan leaves the battery alone instead of charging it.
 
+    ``battery_cost_per_kwh`` is added to the price of every purchased kWh, so
+    the planner accounts for battery wear when it decides whether charging pays
+    off. ``export_min_spread`` is the minimum difference between the export
+    price and that battery-cost-adjusted purchase price: the battery only
+    exports in hours that clear it. Both are reported in the plan notes (and
+    therefore in the activity log) so the calculation is visible.
+
     The result is sorted by start time, never exceeds ``max_windows`` and carries
     one :class:`PlanReason` per window plus general ``notes``.
     """
@@ -431,6 +445,8 @@ def build_plan(
     pv_credit_kwh = max(0.0, float(pv_credit_kwh))
     standby_kw = max(0.0, float(standby_kw))
     rte = min(1.0, max(0.1, float(rte)))
+    battery_cost_per_kwh = max(0.0, float(battery_cost_per_kwh))
+    export_min_spread = max(0.0, float(export_min_spread))
 
     # The measured quarter-hour house load, when we have one. It replaces the flat
     # standby: the drain before charging and the load during charging come from the
@@ -538,11 +554,15 @@ def build_plan(
                 else charge_avg
             )
             # A kWh from the grid is about 1/RTE more expensive once the losses
-            # are counted, so only charge when the cheap hours still beat the
-            # price we would pay later. Otherwise the battery stays as it is.
-            # With no losses (RTE 100%) charging is never harmful, so the gate
-            # is skipped and the historical behaviour is kept.
-            if rte < 1.0 and charge_avg >= rte * reference_avg:
+            # are counted, and battery wear adds ``battery_cost_per_kwh`` on top.
+            # Only charge when the stored kWh still beats the price we would pay
+            # later (a later purchase does not wear the battery). Otherwise the
+            # battery stays as it is. With no losses and no battery cost,
+            # charging is never harmful, so the gate is skipped and the
+            # historical behaviour is kept.
+            if (rte < 1.0 or battery_cost_per_kwh > 0) and (
+                (charge_avg + battery_cost_per_kwh) / rte >= reference_avg
+            ):
                 charge_idx = []
                 skipped_charge = True
 
@@ -554,12 +574,39 @@ def build_plan(
 
     used = set(charge_idx)
     remaining = [(index, slot) for index, slot in indexed if index not in used]
+
+    # Exporting only pays off when the expensive hour clears the price the energy
+    # cost to buy, plus the battery wear, by at least the required spread. When
+    # nothing was charged, the cheapest remaining slot is the opportunity cost of
+    # the stored energy (what a replacement kWh would cost).
+    if charge_idx:
+        reference_buy = charge_avg + battery_cost_per_kwh
+    else:
+        reference_buy = (
+            min((slot.price for _, slot in remaining), default=0.0)
+            + battery_cost_per_kwh
+        )
+    export_floor = (
+        reference_buy + export_min_spread if export_min_spread > 0 else None
+    )
+    candidates = remaining
+    export_skipped = False
+    if export_floor is not None:
+        # The tolerance keeps an exact threshold (e.g. 0.30) from being lost to
+        # floating-point rounding.
+        candidates = [
+            (index, slot)
+            for index, slot in remaining
+            if slot.price + 1e-9 >= export_floor
+        ]
+        export_skipped = available_kwh > 0 and bool(remaining) and not candidates
+
     if export_cap_kwh is not None:
         # One capped, contiguous window per day so the export budget is spread
         # over the days instead of being spent on a single peak.
         discharge_runs = (
             _discharge_runs_per_day(
-                remaining,
+                candidates,
                 discharge_per_slot=discharge_per_slot,
                 total_energy_kwh=available_kwh,
                 per_day_energy_kwh=export_cap_kwh,
@@ -570,11 +617,11 @@ def build_plan(
         )
     else:
         count = (
-            min(len(remaining), math.ceil(available_kwh / discharge_per_slot))
+            min(len(candidates), math.ceil(available_kwh / discharge_per_slot))
             if available_kwh > 0
             else 0
         )
-        discharge_idx = _select_indices(remaining, count, cheapest=False)
+        discharge_idx = _select_indices(candidates, count, cheapest=False)
         discharge_runs = (
             _merge_runs(_group_runs(discharge_idx), discharge_windows)
             if discharge_idx and discharge_windows
@@ -632,6 +679,52 @@ def build_plan(
                 lang, "plan.available_note", avail=available_kwh, min_soc=min_soc
             )
         )
+    # Make the pricing calculation visible. These notes travel with the plan to
+    # the planner card and into the activity log, so the user can see why the
+    # battery did (or did not) export.
+    if battery_cost_per_kwh > 0 or export_min_spread > 0:
+        notes.append(
+            translate(
+                lang,
+                "plan.battery_cost_note",
+                cost=battery_cost_per_kwh,
+                spread=export_min_spread,
+            )
+        )
+    if export_floor is not None:
+        if export_skipped:
+            best_available = max(
+                (slot.price for _, slot in remaining), default=0.0
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.export_skipped",
+                    best=best_available,
+                    actual=best_available - reference_buy,
+                    buy=reference_buy,
+                    spread=export_min_spread,
+                )
+            )
+        elif discharge_runs:
+            best_export = max(
+                (
+                    future[index].price
+                    for run in discharge_runs
+                    for index in range(run[0], run[1] + 1)
+                ),
+                default=0.0,
+            )
+            notes.append(
+                translate(
+                    lang,
+                    "plan.export_spread_note",
+                    price=best_export,
+                    actual=best_export - reference_buy,
+                    buy=reference_buy,
+                    spread=export_min_spread,
+                )
+            )
     if profile is not None:
         daily = _profile_daily_kwh(profile, slot_minutes=slot_minutes)
         notes.append(
@@ -747,6 +840,8 @@ def plan_windows(
         standby_kw=0.0,
         export_hours=None,
         rte=1.0,
+        battery_cost_per_kwh=0.0,
+        export_min_spread=0.0,
         max_windows=max_windows,
         charge_windows=charge_windows,
         discharge_windows=discharge_windows,
@@ -764,12 +859,15 @@ def windows_cost(
     charge_power_kw: float = DEFAULT_CHARGE_KW,
     discharge_power_kw: float = DEFAULT_DISCHARGE_KW,
     slot_minutes: int = SLOT_MINUTES,
+    battery_cost_per_kwh: float = DEFAULT_BATTERY_COST_PER_KWH,
 ) -> float:
     """Net grid cost of a set of windows over the slots from ``now`` on.
 
-    Charging costs money (positive), discharging earns it (negative). Used to
-    decide whether a re-planned schedule is actually cheaper than the one that is
-    on the inverter right now.
+    Charging costs money (positive), discharging earns it (negative). The
+    purchase price includes ``battery_cost_per_kwh`` so the estimate accounts for
+    battery wear, exactly as the planner does. Used to decide whether a
+    re-planned schedule is actually cheaper than the one that is on the inverter
+    right now.
     """
     slot_hours = slot_minutes / 60.0
     total = 0.0
@@ -784,7 +882,11 @@ def windows_cost(
             if not (window.start <= moment < window.stop):
                 continue
             if window.mode == "charge":
-                total += slot.price * max(0.0, float(charge_power_kw)) * slot_hours
+                total += (
+                    (slot.price + max(0.0, float(battery_cost_per_kwh)))
+                    * max(0.0, float(charge_power_kw))
+                    * slot_hours
+                )
             elif window.mode == "discharge":
                 total -= slot.price * max(0.0, float(discharge_power_kw)) * slot_hours
             break

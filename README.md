@@ -564,6 +564,14 @@ cheapest quarter hours only when that price still beats the most expensive hours
 the house would otherwise buy later. When the spread does not cover the losses,
 the battery is left alone and a note explains why.
 
+Purchased electricity is priced **5 ct/kWh higher** in that calculation to cover
+battery wear: the buy price is the market slot price plus €0.05. The battery only
+**exports** in the expensive hours when the spread — the export price minus that
+battery-cost-adjusted buy price — is at least **20 ct/kWh**. Below that, the plan
+leaves the battery for the house instead of forcing an export. The plan notes and
+the activity log state the calculation with the actual numbers, so you can see
+which buy price, spread and threshold the planner used.
+
 The defaults can be changed in the integration **Configure** dialog or passed to
 the service:
 

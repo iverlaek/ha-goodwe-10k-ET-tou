@@ -99,6 +99,14 @@ DEFAULT_STANDBY_KW: Final = 1.2
 #: How long the battery may export to the grid at full power in a bad solar
 #: period before it must be kept for the house.
 DEFAULT_EXPORT_HOURS: Final = 1.0
+#: Extra cost per purchased kWh, covering battery wear. The planner adds it to
+#: the buy price before it decides whether charging (and later exporting) pays
+#: off.
+DEFAULT_BATTERY_COST_PER_KWH: Final = 0.05
+#: Minimum spread between the export price and the battery-cost-adjusted
+#: purchase price before the battery is allowed to export in the expensive
+#: hours.
+DEFAULT_EXPORT_MIN_SPREAD: Final = 0.20
 #: Maximum power (W) the inverter may feed back to the grid. The GoodWe blocks
 #: *all* export when this is 0, which also stops the discharge windows: the
 #: battery then only covers the house load. Default to the inverter's AC rating.
