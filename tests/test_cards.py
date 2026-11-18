@@ -162,3 +162,29 @@ def test_dashboard_opens_with_the_cost_card() -> None:
     assert text.index("custom:goodwe-tou-cost-card", first_card) < text.index(
         "custom:goodwe-tou-card", first_card
     )
+
+
+def test_cost_card_shows_large_battery_and_grid_direction_symbols() -> None:
+    """The cost card has a battery and a grid symbol whose colour is the state."""
+    text = (_WWW / "goodwe-tou-cost-card.js").read_text(encoding="utf-8")
+    assert 'BATTERY_POWER_DEFAULT = "sensor.battery_power"' in text
+    assert 'GRID_POWER_DEFAULT = "sensor.meter_active_power_total"' in text
+    assert "_powerInfo" in text
+    assert "invert_grid" in text
+    assert "power_idle_w" in text
+    # Battery: grey idle, red charging, green discharging.
+    assert ".ico.battery.charge { color: #dc2626; }" in text
+    assert ".ico.battery.discharge { color: #16a34a; }" in text
+    # Grid: grey idle, purple importing, blue exporting.
+    assert ".ico.grid.import { color: #9333ea; }" in text
+    assert ".ico.grid.export { color: #2563eb; }" in text
+    assert "idle { color: var(--disabled-text-color" in text
+    # Both languages name the states.
+    for key in ("batCharge", "batDischarge", "gridImport", "gridExport"):
+        assert text.count(f"{key}:") == 2, f"{key} must exist in nl and en"
+    # A battery fill follows the state of charge.
+    assert 'id="batFill"' in text
+    assert "battery_state_of_charge" in text
+    # Named placeholders in the translations are filled in by _t().
+    assert "value.replace(/\\{(\\w+)\\}/g" in text
+    assert "usedSub.textContent" in text

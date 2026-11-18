@@ -44,9 +44,13 @@
  *   battery_cost: 0.05                            # €/kWh added to grid charging
  *   rte: 0.85                                     # round-trip efficiency
  *   slot_minutes: 15                              # price/profile granularity
+ *   battery_power_entity: sensor.battery_power    # + discharging, - charging
+ *   grid_power_entity: sensor.meter_active_power_total
+ *   invert_grid: false                            # true flips the grid sign
+ *   power_idle_w: 25                              # below this the icon is grey
  */
 
-const CARD_VERSION = "1.10.0";
+const CARD_VERSION = "1.11.0";
 
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const PRICE_DEFAULT = "sensor.average_electricity_price";
@@ -56,6 +60,8 @@ const EXPORT_DEFAULT = "sensor.p1_meter_energy_export";
 const TODAY_IMPORT_DEFAULT = "sensor.today_energy_import";
 const TODAY_EXPORT_DEFAULT = "sensor.today_energy_export";
 const SOC_DEFAULT = "sensor.battery_state_of_charge";
+const BATTERY_POWER_DEFAULT = "sensor.battery_power";
+const GRID_POWER_DEFAULT = "sensor.meter_active_power_total";
 
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -81,6 +87,16 @@ const LANGS = {
     noData: "geen gegevens",
     loading: "kosten laden…",
     trendTitle: "Effect van de laatste wijziging in de vensters",
+    battery: "Batterij",
+    grid: "Net",
+    batCharge: "laden",
+    batDischarge: "ontladen",
+    batIdle: "rust",
+    gridImport: "afname",
+    gridExport: "teruglevering",
+    gridIdle: "rust",
+    batteryTitle: "Batterijvermogen: rood = laden, groen = ontladen, grijs = rust",
+    gridTitle: "Netvermogen: paars = afname, blauw = teruglevering, grijs = rust",
   },
   en: {
     title: "Electricity cost",
@@ -95,6 +111,16 @@ const LANGS = {
     noData: "no data",
     loading: "loading cost…",
     trendTitle: "Effect of the last change to the windows",
+    battery: "Battery",
+    grid: "Grid",
+    batCharge: "charging",
+    batDischarge: "discharging",
+    batIdle: "idle",
+    gridImport: "importing",
+    gridExport: "exporting",
+    gridIdle: "idle",
+    batteryTitle: "Battery power: red = charging, green = discharging, grey = idle",
+    gridTitle: "Grid power: purple = importing, blue = exporting, grey = idle",
   },
 };
 
@@ -151,6 +177,21 @@ const STYLES = `
   .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .title { font-size: 1.05rem; font-weight: 600; color: var(--primary-text-color); }
   .version { font-size: .7rem; color: var(--secondary-text-color); }
+  .power { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--divider-color); }
+  .powerblock { display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 0; }
+  .ico { width: 72px; height: 72px; display: block; }
+  .ico.battery.idle, .ico.grid.idle { color: var(--disabled-text-color, #9e9e9e); }
+  .ico.battery.charge { color: #dc2626; }
+  .ico.battery.discharge { color: #16a34a; }
+  .ico.grid.import { color: #9333ea; }
+  .ico.grid.export { color: #2563eb; }
+  .ptitle { margin-top: 4px; font-size: .78rem; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; }
+  .pstate { font-size: .95rem; font-weight: 600; color: var(--secondary-text-color); }
+  .pstate.charge { color: #dc2626; }
+  .pstate.discharge { color: #16a34a; }
+  .pstate.import { color: #9333ea; }
+  .pstate.export { color: #2563eb; }
+  .pkw { font-size: 1.05rem; font-weight: 700; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
   .metric { min-width: 0; }
   .label { font-size: .78rem; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .04em; }
@@ -185,6 +226,10 @@ class GoodweTouCostCard extends HTMLElement {
     this._todayImportEntity = TODAY_IMPORT_DEFAULT;
     this._todayExportEntity = TODAY_EXPORT_DEFAULT;
     this._socEntity = SOC_DEFAULT;
+    this._batteryPowerEntity = BATTERY_POWER_DEFAULT;
+    this._gridPowerEntity = GRID_POWER_DEFAULT;
+    this._invertGrid = false;
+    this._idleW = 25;
 
     this._capacityKwh = 24;
     this._minSoc = 20;
@@ -247,6 +292,10 @@ class GoodweTouCostCard extends HTMLElement {
     this._todayExportEntity =
       this._config.today_export_entity || TODAY_EXPORT_DEFAULT;
     this._socEntity = this._config.soc_entity || SOC_DEFAULT;
+    this._batteryPowerEntity =
+      this._config.battery_power_entity || BATTERY_POWER_DEFAULT;
+    this._gridPowerEntity = this._config.grid_power_entity || GRID_POWER_DEFAULT;
+    this._invertGrid = this._config.invert_grid === true;
 
     const number = (value, fallback, low, high) => {
       const parsed = Number(value);
@@ -259,6 +308,7 @@ class GoodweTouCostCard extends HTMLElement {
     this._batteryCost = number(this._config.battery_cost, 0.05, 0, 1);
     this._rte = number(this._config.rte, 0.85, 0.1, 1);
     this._slotMinutes = number(this._config.slot_minutes, 15, 1, 60);
+    this._idleW = number(this._config.power_idle_w, 25, 0, 5000);
 
     this._built = false;
     if (this._hass) this._build();
@@ -286,7 +336,7 @@ class GoodweTouCostCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 3;
+    return 4;
   }
 
   // -- language ----------------------------------------------------------
@@ -308,7 +358,17 @@ class GoodweTouCostCard extends HTMLElement {
   _t(key, ...args) {
     const table = LANGS[this._lang] || LANGS.nl;
     const value = table[key];
-    return typeof value === "function" ? value(...args) : value;
+    if (typeof value === "function") return value(...args);
+    if (typeof value === "string" && args.length) {
+      // The translations use named placeholders ({import}, {delta}, ...); the
+      // call sites pass them in the order they appear.
+      let index = 0;
+      return value.replace(/\{(\w+)\}/g, () => {
+        const arg = args[index++];
+        return arg === undefined ? "" : String(arg);
+      });
+    }
+    return value;
   }
 
   // -- state -------------------------------------------------------------
@@ -340,6 +400,30 @@ class GoodweTouCostCard extends HTMLElement {
 
   _formatKwh(value) {
     return `${value.toFixed(1)}`;
+  }
+
+  _formatKw(value) {
+    if (value === null) return "\u2013";
+    return `${(Math.abs(value) / 1000).toFixed(2)} kW`;
+  }
+
+  // Battery and grid direction, straight from the power sensors. The GoodWe
+  // battery reports positive while discharging and negative while charging; the
+  // meter reports positive while importing and negative while feeding back.
+  _powerInfo() {
+    const battery = this._num(this._batteryPowerEntity);
+    let grid = this._num(this._gridPowerEntity);
+    if (grid !== null && this._invertGrid) grid = -grid;
+
+    let batteryKind = "idle";
+    if (battery !== null && battery < -this._idleW) batteryKind = "charge";
+    else if (battery !== null && battery > this._idleW) batteryKind = "discharge";
+
+    let gridKind = "idle";
+    if (grid !== null && grid > this._idleW) gridKind = "import";
+    else if (grid !== null && grid < -this._idleW) gridKind = "export";
+
+    return { battery, grid, batteryKind, gridKind };
   }
 
   // -- prices and profile ------------------------------------------------
@@ -863,6 +947,35 @@ class GoodweTouCostCard extends HTMLElement {
           <div class="title"></div>
           <div class="version">v${CARD_VERSION}</div>
         </div>
+        <div class="power">
+          <div class="powerblock">
+            <svg id="batIcon" class="ico battery idle" viewBox="0 0 44 44" aria-hidden="true">
+              <rect x="8" y="4" width="24" height="36" rx="4" fill="none" stroke="currentColor" stroke-width="2.8"/>
+              <rect x="36" y="15" width="4" height="14" rx="1.5" fill="currentColor"/>
+              <rect id="batFill" x="11.5" y="7.5" width="17" height="29" rx="2" fill="currentColor" opacity=".18"/>
+            </svg>
+            <div class="ptitle" id="batLabel"></div>
+            <div class="pstate" id="batState"></div>
+            <div class="pkw" id="batKw"></div>
+          </div>
+          <div class="powerblock">
+            <svg id="gridIcon" class="ico grid idle" viewBox="0 0 44 44" aria-hidden="true">
+              <g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 4 L15 11 L11 40"/>
+                <path d="M22 4 L29 11 L33 40"/>
+                <path d="M15 11 H29"/>
+                <path d="M12 21 H32"/>
+                <path d="M13 31 H31"/>
+                <path d="M18 4 H26"/>
+                <path d="M15.5 21 L28.5 31" stroke-width="1.4" opacity=".55"/>
+                <path d="M28.5 21 L15.5 31" stroke-width="1.4" opacity=".55"/>
+              </g>
+            </svg>
+            <div class="ptitle" id="gridLabel"></div>
+            <div class="pstate" id="gridState"></div>
+            <div class="pkw" id="gridKw"></div>
+          </div>
+        </div>
         <div class="grid">
           <div class="metric used">
             <div class="label" id="usedLabel"></div>
@@ -885,6 +998,8 @@ class GoodweTouCostCard extends HTMLElement {
     root.querySelector(".title").textContent = this._title || this._t("title");
     root.querySelector("#usedLabel").textContent = this._t("used");
     root.querySelector("#totalLabel").textContent = this._t("total");
+    root.querySelector("#batLabel").textContent = this._t("battery");
+    root.querySelector("#gridLabel").textContent = this._t("grid");
     this._built = true;
     this._signature = null;
     this._renderIfChanged(true);
@@ -904,6 +1019,8 @@ class GoodweTouCostCard extends HTMLElement {
       this._profileSig,
       this._windowsKey(this._windows),
       this._socKwh().toFixed(3),
+      Math.round(this._num(this._batteryPowerEntity) ?? NaN) || 0,
+      Math.round(this._num(this._gridPowerEntity) ?? NaN) || 0,
       this._trend ? `${this._trend.kind}:${this._trend.delta.toFixed(3)}` : "",
       Math.floor(Date.now() / 60_000),
     ].join("|");
@@ -916,6 +1033,7 @@ class GoodweTouCostCard extends HTMLElement {
     const root = this.shadowRoot;
     if (!root) return;
     const data = this._compute();
+    this._renderPower(root);
     const usedValue = root.querySelector("#usedValue");
     const totalValue = root.querySelector("#totalValue");
     const usedSub = root.querySelector("#usedSub");
@@ -971,6 +1089,63 @@ class GoodweTouCostCard extends HTMLElement {
     foot.innerHTML = parts
       .map((part) => `<span>${this._escape(part)}</span>`)
       .join("");
+  }
+
+  // The two large status symbols: colour tells the direction, the text says it
+  // in words and the number is the power flowing right now.
+  _renderPower(root) {
+    const power = this._powerInfo();
+    const blocks = [
+      {
+        id: "bat",
+        value: power.battery,
+        kind: power.batteryKind,
+        title: this._t("batteryTitle"),
+        labels: {
+          charge: "batCharge",
+          discharge: "batDischarge",
+          idle: "batIdle",
+        },
+      },
+      {
+        id: "grid",
+        value: power.grid,
+        kind: power.gridKind,
+        title: this._t("gridTitle"),
+        labels: {
+          import: "gridImport",
+          export: "gridExport",
+          idle: "gridIdle",
+        },
+      },
+    ];
+
+    for (const block of blocks) {
+      const icon = root.querySelector(`#${block.id}Icon`);
+      const state = root.querySelector(`#${block.id}State`);
+      const value = root.querySelector(`#${block.id}Kw`);
+      if (!icon || !state || !value) continue;
+      icon.classList.remove("charge", "discharge", "import", "export", "idle");
+      icon.classList.add(block.kind);
+      state.classList.remove("charge", "discharge", "import", "export");
+      if (block.kind !== "idle") state.classList.add(block.kind);
+      state.textContent = this._t(block.labels[block.kind]);
+      value.textContent = this._formatKw(block.value);
+      icon.setAttribute("title", block.title);
+      icon.parentElement.setAttribute("title", block.title);
+    }
+
+    // The battery symbol is also a state-of-charge gauge: the fill follows the
+    // same SOC the cost model uses.
+    const fill = root.querySelector("#batFill");
+    if (fill) {
+      const soc = this._num(this._socEntity);
+      const pct = soc === null ? 0 : clamp(soc, 0, 100);
+      const height = (29 * pct) / 100;
+      fill.setAttribute("height", height.toFixed(2));
+      fill.setAttribute("y", (36.5 - height).toFixed(2));
+      fill.setAttribute("opacity", pct > 0 ? "0.85" : "0.18");
+    }
   }
 
   _escape(value) {

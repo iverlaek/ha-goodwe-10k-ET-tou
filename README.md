@@ -117,9 +117,10 @@ automate them from scripts, automations and dashboards.
   (`custom:goodwe-tou-profile-card`).
 - A **cost card** (`custom:goodwe-tou-cost-card`) that prices today's actual
   import and export from the P1 meter at the quarter-hour market prices and adds
-  the predicted cost of the rest of the day. Edit one of the four planner
-  windows and it shows a green check when the change is cheaper, or a red cross
-  when the predicted cost goes up.
+  the predicted cost of the rest of the day. Large battery and grid symbols show
+  live charging (red), discharging (green), importing (purple) and exporting
+  (blue). Edit one of the four planner windows and it shows a green check when
+  the change is cheaper, or a red cross when the predicted cost goes up.
 - An **ECO mode** switch (`work_mode = 3`); Time-of-Use only runs in ECO mode.
 - Local polling with configurable interval, retries and a config flow — no YAML.
 - **Dutch or English**: chosen at installation and changeable in the options. It
@@ -565,6 +566,19 @@ predicted total for the old and the new schedule and shows a **green check** whe
 the change is cheaper or a **red cross** when the predicted cost goes up, with
 the difference in euros. Without a change there is no symbol.
 
+Two large symbols at the top show what the system is doing right now:
+
+- **Batterij** — a battery whose fill follows the state of charge. **Grey** when
+  it is idle, **red** while it is charging and **green** while it is
+  discharging, with the current power in kW underneath.
+- **Net** — a grid pylon. **Grey** when there is no meaningful flow, **purple**
+  while the house imports from the grid and **blue** while it exports, again
+  with the current power in kW.
+
+Both symbols read the live power sensors, so they follow the inverter within the
+normal polling interval. The grey band is 25 W by default (`power_idle_w`), so
+meter noise around zero does not flicker between states.
+
 ```yaml
 type: custom:goodwe-tou-cost-card
 title: Elektriciteitskosten                     # optional
@@ -575,6 +589,10 @@ today_export_entity: sensor.today_energy_export
 price_entity: sensor.average_electricity_price
 profile_entity: sensor.goodwe_time_of_use_verbruiksprofiel
 soc_entity: sensor.battery_state_of_charge
+battery_power_entity: sensor.battery_power      # + discharging, - charging
+grid_power_entity: sensor.meter_active_power_total
+invert_grid: false                              # true flips the grid sign
+power_idle_w: 25                                # grey below this many watts
 capacity_kwh: 24
 min_soc: 20
 charge_kw: 6

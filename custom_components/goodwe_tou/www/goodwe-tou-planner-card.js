@@ -45,7 +45,7 @@
  *   spread_ct: 20                                        # optional, minimum export spread (ct/kWh)
  */
 
-const CARD_VERSION = "1.10.0";
+const CARD_VERSION = "1.11.0";
 const PREFIX_DEFAULT = "goodwe_time_of_use";
 const MAX_WINDOWS = 4;
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
